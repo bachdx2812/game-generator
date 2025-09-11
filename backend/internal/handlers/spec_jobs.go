@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"backend/internal/utils"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -186,10 +187,22 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 		if os.Getenv("AUTO_CODE_GENERATION") == "true" {
 			codeJobID = uuid.New().String()
 			go func() {
+				// Initialize git repository
+				gitRepo := utils.NewGitRepo()
+				outputPath := "/tmp" // fallback to /tmp if git not configured
+
+				if gitRepo.IsConfigured() {
+					if err := gitRepo.InitializeRepo(); err != nil {
+						log.Printf("Failed to initialize git repo: %v", err)
+					} else {
+						outputPath = gitRepo.RepoPath
+					}
+				}
+
 				codeReq := CreateCodeJobReq{
 					GameSpecID: specID,
 					GameSpec:   g.SpecJSON,
-					OutputPath: "/tmp",
+					OutputPath: outputPath,
 				}
 
 				// Call the existing code generation logic
@@ -328,15 +341,28 @@ func DeleteSpec(db *pgxpool.Pool) fiber.Handler {
 		id := c.Params("id")
 		ctx := context.Background()
 
-		// First, check if the spec exists
+		// First, check if the spec exists and get its title
 		var exists bool
-		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM game_specs WHERE id = $1)", id).Scan(&exists)
+		var gameTitle string
+		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM game_specs WHERE id = $1), COALESCE((SELECT title FROM game_specs WHERE id = $1), '')", id).Scan(&exists, &gameTitle)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Database error")
 		}
 
 		if !exists {
 			return fiber.NewError(fiber.StatusNotFound, "Spec not found")
+		}
+
+		// Initialize git repository for cleanup
+		gitRepo := utils.NewGitRepo()
+		if gitRepo.IsConfigured() {
+			if err := gitRepo.InitializeRepo(); err == nil {
+				// Find and remove game folders associated with this spec
+				if err := gitRepo.RemoveGameFolders(id, gameTitle); err != nil {
+					// Log the error but don't fail the deletion
+					log.Printf("Warning: Failed to remove game folders from git: %v", err)
+				}
+			}
 		}
 
 		// Get LLM backend URL

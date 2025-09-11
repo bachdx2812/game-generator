@@ -318,6 +318,7 @@ def generate_code_from_spec(game_spec: Dict[str, Any]) -> GenCodeResp:
         # Create optimized prompt focusing on implementation
         prompt = f"""Generate a complete HTML5 game: {title}
 
+Game Title: {title}
 Game Type: {genre}
 Core Mechanics: {', '.join(mechanics[:3]) if mechanics else 'standard game mechanics'}
 Controls: {', '.join(controls)}
@@ -331,13 +332,15 @@ Key Rules:
 Win/Lose Conditions:
 {essential_info['win_conditions'][:200]}
 
-Generate EXACTLY 3 files in this JSON format:
+CRITICAL: You MUST respond with ONLY a valid JSON object. Do NOT include any explanatory text, markdown formatting, or code blocks. Start your response directly with {{ and end with }}.
+
+Required JSON format:
 {{
   "success": true,
   "files": [
-    {{"path": "index.html", "content": "[HTML]", "file_type": "html"}},
-    {{"path": "style.css", "content": "[CSS]", "file_type": "css"}},
-    {{"path": "game.js", "content": "[JAVASCRIPT]", "file_type": "javascript"}}
+    {{"path": "index.html", "content": "[COMPLETE HTML CODE]", "file_type": "html"}},
+    {{"path": "style.css", "content": "[COMPLETE CSS CODE]", "file_type": "css"}},
+    {{"path": "game.js", "content": "[COMPLETE JAVASCRIPT CODE]", "file_type": "javascript"}}
   ],
   "project_structure": {{}},
   "build_instructions": "Open index.html in browser"
@@ -354,7 +357,11 @@ Requirements:
 - Implement ALL specified game mechanics
 - Clean, readable code with proper error handling
 
-IMPORTANT: Generate complete working code, not placeholders!"""
+IMPORTANT:
+1. Generate complete working code, not placeholders!
+2. Your response must be valid JSON that can be parsed directly
+3. Do NOT wrap your response in markdown code blocks
+4. Do NOT include any text before or after the JSON object"""
 
         print(f"[DEBUG] Optimized prompt length: {len(prompt)} characters")
 
@@ -362,10 +369,10 @@ IMPORTANT: Generate complete working code, not placeholders!"""
             response = openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a professional game developer. Generate complete, working HTML5 games with actual implementation code."},
+                    {"role": "system", "content": "You are a professional game developer. You MUST respond with valid JSON only. Do not include any explanatory text, markdown formatting, or code blocks. Your response must start with { and end with }."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=4000,  # Reduced to leave more room for input
+                max_tokens=4000,
                 temperature=0.3
             )
         except Exception as api_error:
@@ -394,16 +401,76 @@ IMPORTANT: Generate complete working code, not placeholders!"""
         print(f"[DEBUG] OpenAI response length: {len(content)} characters")
         print(f"[DEBUG] OpenAI response preview: {content[:200]}...")
 
-        # Handle potential markdown code blocks
-        if content.startswith("```json"):
-            content = content[7:]  # Remove ```json
-        if content.endswith("```"):
-            content = content[:-3]  # Remove ```
-        content = content.strip()
+        # Enhanced JSON extraction with multiple fallback strategies
+        def extract_json_from_response(text):
+            """Extract JSON from LLM response with multiple strategies"""
+            text = text.strip()
 
-        # Parse the JSON response
+            # Strategy 1: Direct JSON parsing (ideal case)
+            if text.startswith('{') and text.endswith('}'):
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    pass
+
+            # Strategy 2: Remove markdown code blocks
+            if '```json' in text:
+                start = text.find('```json') + 7
+                end = text.find('```', start)
+                if end > start:
+                    json_text = text[start:end].strip()
+                    try:
+                        return json.loads(json_text)
+                    except json.JSONDecodeError:
+                        pass
+
+            # Strategy 3: Find JSON object boundaries
+            json_start = text.find('{')
+            json_end = text.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                json_text = text[json_start:json_end]
+                try:
+                    return json.loads(json_text)
+                except json.JSONDecodeError:
+                    pass
+
+            # Strategy 4: Remove common prefixes/suffixes
+            prefixes_to_remove = [
+                "Here is", "Here's", "```json", "```", "The JSON", "JSON:"
+            ]
+            suffixes_to_remove = [
+                "```", "Let me know", "Hope this helps"
+            ]
+
+            cleaned_text = text
+            for prefix in prefixes_to_remove:
+                if cleaned_text.lower().startswith(prefix.lower()):
+                    cleaned_text = cleaned_text[len(prefix):].strip()
+
+            for suffix in suffixes_to_remove:
+                if cleaned_text.lower().endswith(suffix.lower()):
+                    cleaned_text = cleaned_text[:-len(suffix)].strip()
+
+            # Try parsing cleaned text
+            json_start = cleaned_text.find('{')
+            json_end = cleaned_text.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                json_text = cleaned_text[json_start:json_end]
+                try:
+                    return json.loads(json_text)
+                except json.JSONDecodeError:
+                    pass
+
+            return None
+
+        # Parse the JSON response with enhanced extraction
         try:
-            parsed_response = json.loads(content)
+            parsed_response = extract_json_from_response(content)
+
+            if parsed_response is None:
+                raise json.JSONDecodeError(
+                    "Could not extract valid JSON", content, 0)
+
             print(
                 f"[DEBUG] Successfully parsed JSON response with {len(parsed_response.get('files', []))} files")
 
@@ -491,9 +558,39 @@ IMPORTANT: Generate complete working code, not placeholders!"""
 
 @app.post("/llm/generate-code", response_model=GenCodeResp)
 def generate_code(req: GenCodeReq):
-    if not req.game_spec:
-        raise HTTPException(status_code=400, detail="game_spec is required")
-    return generate_code_from_spec(req.game_spec)
+    try:
+        if not req.game_spec:
+            return GenCodeResp(
+                success=False,
+                files=[],
+                project_structure={},
+                build_instructions="",
+                error="game_spec is required"
+            )
+
+        result = generate_code_from_spec(req.game_spec)
+
+        # Ensure we always return a valid response
+        if not result:
+            return GenCodeResp(
+                success=False,
+                files=[],
+                project_structure={},
+                build_instructions="",
+                error="Failed to generate code - no result returned"
+            )
+
+        return result
+
+    except Exception as e:
+        print(f"[ERROR] Exception in generate_code endpoint: {e}")
+        return GenCodeResp(
+            success=False,
+            files=[],
+            project_structure={},
+            build_instructions="",
+            error=f"Code generation failed: {str(e)}"
+        )
 
 
 @app.delete("/vector/clear")
