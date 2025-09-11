@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -14,7 +15,8 @@ load_dotenv()
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "game_specs")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI(title="LLM & Vector Service (Spec Planner)")
@@ -22,13 +24,15 @@ app = FastAPI(title="LLM & Vector Service (Spec Planner)")
 # Initialize OpenAI client
 if OPENAI_API_KEY:
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    print(f"OpenAI API key loaded successfully (ends with: ...{OPENAI_API_KEY[-10:]})")
+    print(
+        f"OpenAI API key loaded successfully (ends with: ...{OPENAI_API_KEY[-10:]})")
 else:
     openai_client = None
     print("Warning: OPENAI_API_KEY not set in environment variables")
 
 model = SentenceTransformer(EMBEDDING_MODEL)
 client = QdrantClient(url=QDRANT_URL)
+
 
 def ensure_collection():
     dim = model.get_sentence_embedding_dimension()
@@ -40,134 +44,102 @@ def ensure_collection():
             vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
         )
 
+
 ensure_collection()
+
 
 class GenSpecReq(BaseModel):
     brief: str
     constraints: Optional[Dict[str, Any]] = None
+
 
 class GenSpecResp(BaseModel):
     title: str
     spec_markdown: str
     spec_json: Dict[str, Any]
 
+
 class SearchReq(BaseModel):
     text: str
     top_k: int = 5
     threshold: float = 0.86
+
 
 class SimilarItem(BaseModel):
     spec_id: str
     title: str
     score: float
 
+
 class SearchResp(BaseModel):
     similar: List[SimilarItem]
+
 
 class UpsertReq(BaseModel):
     spec_id: str
     text: str
     payload: Dict[str, Any] = {}
 
-def generate_spec_from_brief(brief: str, constraints: Optional[Dict[str, Any]] = None) -> GenSpecResp:
-    if not openai_client:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+
+def load_spec_prompt_template() -> str:
+    """Load the detailed spec prompt template from llmvec directory"""
+    current_dir = Path(__file__).parent
+    prompt_path = current_dir / "spec_prompt.txt"
 
     try:
-        # Construct the prompt for OpenAI
-        constraints_text = ""
+        if prompt_path.exists():
+            return prompt_path.read_text(encoding='utf-8')
+        else:
+            print(f"Warning: spec_prompt.txt not found at {prompt_path}")
+            # Fallback to a basic prompt if file not found
+            return """Generate a detailed game specification for {GAME_NAME}.
+
+Brief: {BRIEF}
+
+Provide a comprehensive specification including:
+            - Overview and core mechanics
+            - Platform requirements (mobile-first)
+            - Game modes (vs AI and PvP online)
+            - Controls and UI requirements
+            - Win/lose conditions
+            - Technical implementation notes
+
+Respond with a detailed markdown specification."""
+    except Exception as e:
+        print(f"Error loading spec_prompt.txt: {e}")
+        return "Generate a detailed game specification based on the brief: {BRIEF}"
+
+
+def generate_spec_from_brief(brief: str, constraints: Optional[Dict[str, Any]] = None) -> GenSpecResp:
+    if not openai_client:
+        raise HTTPException(
+            status_code=500, detail="OpenAI API key not configured")
+
+    try:
+        # Load the detailed prompt template
+        prompt_template = load_spec_prompt_template()
+
+        # Extract game name from brief or use a default
+        game_name = brief.split('.')[0].strip() if '.' in brief else brief[:50]
+
+        # Replace placeholders in the template
+        prompt = prompt_template.replace("{GAME_NAME}", game_name)
+        prompt = prompt.replace("{BRIEF}", brief)
+
+        # Add blockchain chain placeholder (you can customize this)
+        prompt = prompt.replace("{BLOCKCHAIN_CHAIN}", "Ethereum")
+
+        # Add constraints if provided
         if constraints:
-            constraints_text = f"\n\nConstraints: {json.dumps(constraints, indent=2)}"
+            constraints_text = f"\n\nAdditional Constraints: {json.dumps(constraints, indent=2)}"
+            prompt += constraints_text
 
-        prompt = f"""Generate a detailed HTML5 web game specification based on the following brief:
-
-Brief: {brief}{constraints_text}
-
-IMPORTANT REQUIREMENTS:
-- The game MUST be a WEB-BASED HTML5 game (playable in browsers)
-- The game MUST support TWO game modes:
-  1. vs AI (single player against computer)
-  2. PvP online realtime (multiplayer against other players)
-- Design the game mechanics to work seamlessly in both modes
-- Include AI behavior specifications for the vs AI mode
-- Include networking/synchronization requirements for PvP mode
-- Focus on web technologies (HTML5 Canvas, WebGL, WebSockets, etc.)
-- BE VERY SPECIFIC about the game concept, mechanics, and gameplay
-- Provide detailed descriptions that clearly differentiate this game from others in the same genre
-
-Please respond with a JSON object containing the following structure:
-{{
-    "title": "Specific Game Title (not just generic names)",
-    "description": "Detailed 2-3 sentence description of what makes this game unique and engaging",
-    "genre": "specific sub-genre (e.g., 'tower defense', 'match-3 puzzle', 'real-time strategy')",
-    "core_concept": "The main game concept and what players do (e.g., 'Players control a spaceship navigating through asteroid fields while collecting power-ups and avoiding enemies')",
-    "how_to_play": "Step-by-step explanation of gameplay mechanics, controls, objectives, and win/lose conditions. Be very detailed and specific.",
-    "duration_sec": 60,
-    "platform": ["web"],
-    "controls": ["mouse", "keyboard", "touch"],
-    "game_modes": [
-        {{
-            "mode": "vs_ai",
-            "description": "Single player vs computer AI",
-            "ai_behavior": "Detailed AI strategy, difficulty progression, and behavioral patterns",
-            "gameplay_differences": "How this mode differs from PvP in terms of pacing, difficulty, or mechanics"
-        }},
-        {{
-            "mode": "pvp_online",
-            "description": "Real-time multiplayer online",
-            "networking": "Specific synchronization requirements and real-time features",
-            "competitive_elements": "What makes the PvP experience engaging and competitive"
-        }}
-    ],
-    "detailed_mechanics": [
-        {{
-            "mechanic_name": "Name of mechanic",
-            "description": "Detailed explanation of how this mechanic works",
-            "player_interaction": "How players interact with this mechanic"
-        }}
-    ],
-    "objectives": {{
-        "primary_goal": "Main objective players must achieve to win",
-        "secondary_goals": ["Optional objectives that enhance gameplay"],
-        "progression_system": "How players advance or improve during the game"
-    }},
-    "visual_style": {{
-        "art_direction": "Specific visual theme and aesthetic (e.g., 'retro pixel art', 'minimalist geometric', 'cartoon fantasy')",
-        "color_palette": "Primary colors and mood",
-        "key_visual_elements": ["Important visual components that define the game's look"]
-    }},
-    "technical_requirements": {{
-        "web_technologies": ["HTML5 Canvas", "WebSockets", "JavaScript"],
-        "ai_features": "Specific AI implementation details for vs AI mode",
-        "networking_features": "Detailed real-time networking requirements for PvP",
-        "browser_compatibility": "modern browsers with HTML5 support",
-        "performance_considerations": "Key performance requirements and optimizations needed"
-    }},
-    "game_flow": {{
-        "start_sequence": "How the game begins",
-        "main_gameplay_loop": "The core repeating cycle of gameplay",
-        "end_conditions": "All possible ways the game can end"
-    }},
-    "unique_features": ["List of distinctive features that set this game apart from similar games"],
-    "difficulty_progression": "How the game becomes more challenging over time",
-    "assets": [
-        {{
-            "category": "sprites/sounds/ui",
-            "items": ["specific asset names"],
-            "description": "What these assets are used for"
-        }}
-    ]
-}}
-
-Ensure the game specification is so detailed that a developer could understand exactly what to build, and the 'how_to_play' section is comprehensive enough for vector similarity search."""
-
-        # Call OpenAI API
         response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert game designer who creates highly detailed, specific game specifications. Focus on creating unique, well-defined games with clear mechanics and engaging gameplay. Avoid generic descriptions - be specific about what makes each game special and how it plays."
+                    "content": "You are a Requirements Author specializing in game specifications. You MUST respond with valid JSON only, following the exact format specified in the prompt."
                 },
                 {
                     "role": "user",
@@ -179,350 +151,65 @@ Ensure the game specification is so detailed that a developer could understand e
         )
 
         # Parse the response
-        content = response.choices[0].message.content.strip()
+        llm_response = response.choices[0].message.content.strip()
+
+        # Clean up potential markdown formatting
+        if llm_response.startswith("```json"):
+            llm_response = llm_response[7:]
+        if llm_response.endswith("```"):
+            llm_response = llm_response[:-3]
+        llm_response = llm_response.strip()
 
         try:
-            # Try to parse as JSON
-            spec_json = json.loads(content)
-        except json.JSONDecodeError:
-            # Enhanced fallback with more detailed structure
-            spec_json = {
-                "title": "Space Debris Collector",
-                "description": "A fast-paced arcade game where players pilot a salvage ship through dangerous asteroid fields, collecting valuable space debris while avoiding collisions and enemy drones.",
-                "genre": "arcade collection",
-                "core_concept": "Navigate a small spacecraft through procedurally generated asteroid fields, collecting glowing debris while managing fuel and avoiding obstacles",
-                "how_to_play": "Use arrow keys or WASD to control your spacecraft. Collect glowing debris pieces to score points and refuel. Avoid asteroids and enemy drones that patrol the field. Your fuel depletes over time, so collect fuel canisters to stay alive. The game speeds up as you progress. In vs AI mode, compete against an AI opponent for the highest score. In PvP mode, race against other players in real-time to collect the most debris.",
-                "duration_sec": 60,
-                "platform": ["web"],
-                "controls": ["keyboard", "mouse"],
-                "game_modes": [
-                    {
-                        "mode": "vs_ai",
-                        "description": "Single player vs computer AI",
-                        "ai_behavior": "AI opponent with adaptive difficulty that learns from player patterns",
-                        "gameplay_differences": "AI provides consistent challenge with predictable patterns"
-                    },
-                    {
-                        "mode": "pvp_online",
-                        "description": "Real-time multiplayer online",
-                        "networking": "WebSocket-based real-time position and score synchronization",
-                        "competitive_elements": "Live leaderboard and collision interactions between players"
-                    }
-                ],
-                "detailed_mechanics": [
-                    {
-                        "mechanic_name": "Debris Collection",
-                        "description": "Players collect glowing debris pieces scattered throughout the field",
-                        "player_interaction": "Fly over debris to automatically collect it and gain points"
-                    }
-                ],
-                "objectives": {
-                    "primary_goal": "Collect the most debris within the time limit",
-                    "secondary_goals": ["Avoid all collisions", "Collect fuel efficiently"],
-                    "progression_system": "Score multiplier increases with consecutive collections"
-                },
-                "visual_style": {
-                    "art_direction": "retro pixel art space theme",
-                    "color_palette": "dark space background with bright neon debris",
-                    "key_visual_elements": ["animated spacecraft", "glowing particles", "rotating asteroids"]
-                },
-                "technical_requirements": {
-                    "web_technologies": ["HTML5 Canvas", "WebSockets", "JavaScript"],
-                    "ai_features": "Pathfinding AI for computer opponent",
-                    "networking_features": "Real-time position synchronization for multiplayer",
-                    "browser_compatibility": "modern browsers with HTML5 support",
-                    "performance_considerations": "Efficient collision detection and particle systems"
-                },
-                "game_flow": {
-                    "start_sequence": "3-2-1 countdown with spacecraft appearing at spawn point",
-                    "main_gameplay_loop": "Navigate, collect, avoid obstacles, manage fuel",
-                    "end_conditions": "Time runs out or fuel depleted"
-                },
-                "unique_features": ["Fuel management system", "Dynamic difficulty scaling", "Particle trail effects"],
-                "difficulty_progression": "Asteroid density and enemy drone speed increase over time",
-                "assets": [
-                    {
-                        "category": "sprites",
-                        "items": ["spacecraft", "asteroids", "debris", "fuel_canisters"],
-                        "description": "Visual game objects and collectibles"
-                    }
-                ]
-            }
+            # Parse the structured JSON response
+            parsed_response = json.loads(llm_response)
 
-        # Generate enhanced markdown with all the detailed information
-        title = spec_json.get("title", "Generated Web Game")
-        description = spec_json.get("description", "")
-        genre = spec_json.get("genre", "arcade")
-        core_concept = spec_json.get("core_concept", "")
-        how_to_play = spec_json.get("how_to_play", "")
-        duration = spec_json.get("duration_sec", 60)
-        platform = spec_json.get("platform", ["web"])
-        controls = spec_json.get("controls", ["mouse", "keyboard"])
-        game_modes = spec_json.get("game_modes", [])
-        detailed_mechanics = spec_json.get("detailed_mechanics", [])
-        objectives = spec_json.get("objectives", {})
-        visual_style = spec_json.get("visual_style", {})
-        technical_req = spec_json.get("technical_requirements", {})
-        game_flow = spec_json.get("game_flow", {})
-        unique_features = spec_json.get("unique_features", [])
-        difficulty_progression = spec_json.get("difficulty_progression", "")
-        assets = spec_json.get("assets", [])
+            if "markdown" in parsed_response and "json" in parsed_response:
+                spec_markdown = parsed_response["markdown"]
+                spec_json = parsed_response["json"]
+                title = spec_json.get("title", game_name)
+            else:
+                raise ValueError(
+                    "Response missing required 'markdown' or 'json' fields")
 
-        spec_markdown = f"""# {title}
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Failed to parse structured JSON response: {e}")
+            # Fallback to original parsing logic
+            json_start = llm_response.rfind('{')
+            json_end = llm_response.rfind('}') + 1
 
-## Description
-{description}
-
-## Core Concept
-{core_concept}
-
-## How to Play
-{how_to_play}
-
-## Game Details
-- **Genre**: {genre}
-- **Platform**: {', '.join(platform)}
-- **Duration**: {duration} seconds
-- **Controls**: {', '.join(controls)}
-
-## Game Modes
-"""
-
-        for mode in game_modes:
-            mode_name = mode.get("mode", "unknown")
-            description = mode.get("description", "")
-            spec_markdown += f"\n### {mode_name.replace('_', ' ').title()}\n{description}\n"
-
-            if "ai_behavior" in mode:
-                spec_markdown += f"**AI Behavior**: {mode['ai_behavior']}\n"
-            if "networking" in mode:
-                spec_markdown += f"**Networking**: {mode['networking']}\n"
-            if "gameplay_differences" in mode:
-                spec_markdown += f"**Gameplay Differences**: {mode['gameplay_differences']}\n"
-            if "competitive_elements" in mode:
-                spec_markdown += f"**Competitive Elements**: {mode['competitive_elements']}\n"
-
-        if detailed_mechanics:
-            spec_markdown += f"\n## Detailed Mechanics\n"
-            for mechanic in detailed_mechanics:
-                name = mechanic.get("mechanic_name", "Unknown")
-                desc = mechanic.get("description", "")
-                interaction = mechanic.get("player_interaction", "")
-                spec_markdown += f"\n### {name}\n{desc}\n**Player Interaction**: {interaction}\n"
-
-        if objectives:
-            spec_markdown += f"\n## Objectives\n"
-            if "primary_goal" in objectives:
-                spec_markdown += f"**Primary Goal**: {objectives['primary_goal']}\n"
-            if "secondary_goals" in objectives:
-                spec_markdown += f"**Secondary Goals**: {', '.join(objectives['secondary_goals'])}\n"
-            if "progression_system" in objectives:
-                spec_markdown += f"**Progression**: {objectives['progression_system']}\n"
-
-        if visual_style:
-            spec_markdown += f"\n## Visual Style\n"
-            for key, value in visual_style.items():
-                if isinstance(value, list):
-                    spec_markdown += f"**{key.replace('_', ' ').title()}**: {', '.join(value)}\n"
-                else:
-                    spec_markdown += f"**{key.replace('_', ' ').title()}**: {value}\n"
-
-        if game_flow:
-            spec_markdown += f"\n## Game Flow\n"
-            for key, value in game_flow.items():
-                spec_markdown += f"**{key.replace('_', ' ').title()}**: {value}\n"
-
-        if unique_features:
-            spec_markdown += f"\n## Unique Features\n"
-            for feature in unique_features:
-                spec_markdown += f"- {feature}\n"
-
-        if difficulty_progression:
-            spec_markdown += f"\n## Difficulty Progression\n{difficulty_progression}\n"
-
-        if technical_req:
-            spec_markdown += f"\n## Technical Requirements\n"
-            for key, value in technical_req.items():
-                if isinstance(value, list):
-                    spec_markdown += f"**{key.replace('_', ' ').title()}**: {', '.join(value)}\n"
-                else:
-                    spec_markdown += f"**{key.replace('_', ' ').title()}**: {value}\n"
-
-        if assets:
-            spec_markdown += f"\n## Required Assets\n"
-            for asset_group in assets:
-                category = asset_group.get("category", "Unknown")
-                items = asset_group.get("items", [])
-                desc = asset_group.get("description", "")
-                spec_markdown += f"\n### {category.title()}\n{desc}\n"
-                for item in items:
-                    spec_markdown += f"- {item}\n"
+            if json_start >= 0 and json_end > json_start:
+                json_text = llm_response[json_start:json_end]
+                spec_json = json.loads(json_text)
+                spec_markdown = llm_response[:json_start].strip()
+            else:
+                # Final fallback JSON structure
+                title = game_name
+                spec_json = {}
+                spec_markdown = llm_response
 
         return GenSpecResp(
-            title=title,
+            title=spec_json.get("title", game_name),
             spec_markdown=spec_markdown,
             spec_json=spec_json
         )
 
     except Exception as e:
-        print(f"Error generating spec: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate spec: {str(e)}")
+        print(f"Error in generate_spec_from_brief: {e}")
+        # Return fallback response
+        title = brief[:50] if brief else "Generated Game"
+        fallback_json = {}
 
+        spec_md = f"# {title}\n\n**Brief:** {brief}\n\n*Note: Error occurred during generation, using fallback response.*"
+        return GenSpecResp(title=title, spec_markdown=spec_md, spec_json=fallback_json)
 
-        # Call OpenAI API using new client syntax
-        response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a game design expert who creates detailed specifications for HTML5 games with both AI and multiplayer capabilities. Always respond with valid JSON only. Focus on games that work well in both vs AI and PvP online modes."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            max_tokens=2000,
-            temperature=0.7
-        )
-
-        # Parse the response using new client syntax
-        llm_response = response.choices[0].message.content.strip()
-
-        # Try to extract JSON from the response
-        try:
-            # Remove any markdown code block formatting if present
-            if llm_response.startswith("```json"):
-                llm_response = llm_response[7:]
-            if llm_response.endswith("```"):
-                llm_response = llm_response[:-3]
-
-            spec_json = json.loads(llm_response)
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse LLM response as JSON: {e}")
-            print(f"Raw response: {llm_response}")
-            # Fallback to a basic structure with both game modes
-            title = (constraints or {}).get("title") or f"Game - {brief[:24]}"
-            spec_json = {
-                "title": title,
-                "genre": (constraints or {}).get("genre", "arcade"),
-                "duration_sec": (constraints or {}).get("duration_sec", 60),
-                "platform": ["mobile", "desktop"],
-                "controls": ["tap", "arrow_keys"],
-                "game_modes": [
-                    {
-                        "mode": "vs_ai",
-                        "description": "Single player vs computer AI",
-                        "ai_behavior": "Basic AI with adaptive difficulty"
-                    },
-                    {
-                        "mode": "pvp_online",
-                        "description": "Real-time multiplayer online",
-                        "networking": "WebSocket-based real-time synchronization"
-                    }
-                ],
-                "mechanics": [{"rule": "Generated from brief: " + brief}],
-                "win_condition": "Complete the objective",
-                "lose_condition": "Fail the objective",
-                "assets": {"sprites": "minimal SVG", "audio": "basic sfx"},
-                "constraints": {"bundle_kb_max": 600, "fps_min": 50},
-                "accessibility": {"high_contrast": True, "pause": True},
-                "technical_requirements": {
-                    "ai_engine": "Simple state machine for AI behavior",
-                    "networking": "WebSocket for real-time communication",
-                    "state_sync": "Deterministic game state with conflict resolution"
-                }
-            }
-
-        # Generate enhanced markdown description
-        title = spec_json.get("title", "Untitled Game")
-        mechanics_md = "\n".join([f"- {m.get('rule', 'Unknown rule')}" for m in spec_json.get("mechanics", [])])
-
-        # Add game modes section
-        game_modes_md = ""
-        if "game_modes" in spec_json:
-            game_modes_md = "\n## Game Modes\n"
-            for mode in spec_json["game_modes"]:
-                mode_name = mode.get("mode", "unknown").replace("_", " ").title()
-                mode_desc = mode.get("description", "No description")
-                game_modes_md += f"### {mode_name}\n- {mode_desc}\n"
-                if "ai_behavior" in mode:
-                    game_modes_md += f"- AI Behavior: {mode['ai_behavior']}\n"
-                if "networking" in mode:
-                    game_modes_md += f"- Networking: {mode['networking']}\n"
-
-        spec_md = f"""# {title}
-
-**Brief:** {brief}
-
-**Genre:** {spec_json.get('genre', 'Unknown')}
-{game_modes_md}
-## Game Mechanics
-{mechanics_md}
-
-## Objective
-- **Win Condition:** {spec_json.get('win_condition', 'Not specified')}
-- **Lose Condition:** {spec_json.get('lose_condition', 'Not specified')}
-
-## Technical Specs
-- **Duration:** {spec_json.get('duration_sec', 60)} seconds
-- **Platforms:** {', '.join(spec_json.get('platform', []))}
-- **Controls:** {', '.join(spec_json.get('controls', []))}
-
-## Assets Required
-- **Sprites:** {spec_json.get('assets', {}).get('sprites', 'Not specified')}
-- **Audio:** {spec_json.get('assets', {}).get('audio', 'Not specified')}
-
-## Technical Requirements
-- **AI Engine:** {spec_json.get('technical_requirements', {}).get('ai_engine', 'Not specified')}
-- **Networking:** {spec_json.get('technical_requirements', {}).get('networking', 'Not specified')}
-- **State Sync:** {spec_json.get('technical_requirements', {}).get('state_sync', 'Not specified')}
-"""
-
-        return GenSpecResp(title=title, spec_markdown=spec_md, spec_json=spec_json)
-
-    except Exception as e:
-        print(f"Error calling OpenAI API: {e}")
-        # Fallback to placeholder response with both game modes
-        title = (constraints or {}).get("title") or f"Game - {brief[:24]}"
-        spec_json = {
-            "title": title,
-            "genre": (constraints or {}).get("genre", "arcade"),
-            "duration_sec": (constraints or {}).get("duration_sec", 60),
-            "platform": ["mobile", "desktop"],
-            "controls": ["tap", "arrow_keys"],
-            "game_modes": [
-                {
-                    "mode": "vs_ai",
-                    "description": "Single player vs computer AI",
-                    "ai_behavior": "Error generating AI specs - using fallback"
-                },
-                {
-                    "mode": "pvp_online",
-                    "description": "Real-time multiplayer online",
-                    "networking": "Error generating networking specs - using fallback"
-                }
-            ],
-            "mechanics": [{"rule": "Error generating mechanics - using fallback"}],
-            "win_condition": "Complete the objective",
-            "lose_condition": "Fail the objective",
-            "assets": {"sprites": "minimal SVG", "audio": "basic sfx"},
-            "constraints": {"bundle_kb_max": 600, "fps_min": 50},
-            "accessibility": {"high_contrast": True, "pause": True},
-            "technical_requirements": {
-                "ai_engine": "Basic AI implementation",
-                "networking": "WebSocket communication",
-                "state_sync": "Simple state synchronization"
-            }
-        }
-        spec_md = f"# {title}\n\n**Brief:** {brief}\n\n*Note: Error occurred during LLM generation, using fallback response with dual-mode support.*"
-        return GenSpecResp(title=title, spec_markdown=spec_md, spec_json=spec_json)
 
 @app.post("/llm/generate-spec", response_model=GenSpecResp)
 def generate_spec(req: GenSpecReq):
     if not req.brief:
         raise HTTPException(status_code=400, detail="brief is required")
     return generate_spec_from_brief(req.brief, req.constraints)
+
 
 @app.post("/vector/search", response_model=SearchResp)
 def search_similar(req: SearchReq):
@@ -539,8 +226,10 @@ def search_similar(req: SearchReq):
     for r in result:
         pid = r.id if isinstance(r.id, str) else str(r.id)
         title = r.payload.get("title", "")
-        items.append(SimilarItem(spec_id=pid, title=title, score=float(r.score)))
+        items.append(SimilarItem(
+            spec_id=pid, title=title, score=float(r.score)))
     return SearchResp(similar=items)
+
 
 @app.post("/vector/upsert")
 def upsert_point(req: UpsertReq):
@@ -548,6 +237,258 @@ def upsert_point(req: UpsertReq):
     emb = model.encode([req.text])[0]
     client.upsert(
         collection_name=COLLECTION_NAME,
-        points=[PointStruct(id=req.spec_id, vector=emb.tolist(), payload=req.payload)]
+        points=[PointStruct(
+            id=req.spec_id, vector=emb.tolist(), payload=req.payload)]
     )
     return {"ok": True, "id": req.spec_id}
+
+
+# Add these new models after the existing ones
+class GenCodeReq(BaseModel):
+    game_spec: Dict[str, Any]
+    output_format: str = "files"  # "files" or "zip"
+
+
+class GeneratedFile(BaseModel):
+    path: str
+    content: str
+    file_type: str
+
+
+class GenCodeResp(BaseModel):
+    success: bool
+    files: List[GeneratedFile]
+    project_structure: Dict[str, Any]
+    build_instructions: str
+    error: Optional[str] = None
+
+
+def generate_code_from_spec(game_spec: Dict[str, Any]) -> GenCodeResp:
+    if not openai_client:
+        return GenCodeResp(
+            success=False,
+            files=[],
+            project_structure={},
+            build_instructions="",
+            error="OpenAI API key not configured"
+        )
+
+    try:
+        # Extract key information from GameSpec
+        title = game_spec.get("title", "Generated Game")
+        genre = game_spec.get("genre", "arcade")
+        mechanics = game_spec.get("mechanics", [])
+        controls = game_spec.get("controls", ["arrow_keys"])
+        duration = game_spec.get("duration_sec", 60)
+        platform = game_spec.get("platform", ["web"])
+
+        # Generate only essential files to stay within token limits
+        prompt = f"""You are a senior web game developer. Generate a simple but complete HTML5 game based on this GameSpec.
+
+GameSpec JSON:
+{json.dumps(game_spec, indent=2)}
+
+REQUIREMENTS:
+1. Generate ONLY 3 files: index.html, style.css, and game.js
+2. Use vanilla HTML5, CSS3, and JavaScript (ES6+) - NO frameworks or build tools
+3. Keep each file under 150 lines for readability
+4. Include complete game loop with requestAnimationFrame
+5. Implement input handling for: {', '.join(controls)}
+6. Add basic collision detection and scoring
+7. Make it responsive and mobile-friendly
+8. Include simple sound effects using Web Audio API
+9. Make it immediately playable by opening index.html in browser
+
+RETURN FORMAT - MUST be valid JSON:
+{{
+  "success": true,
+  "files": [
+    {{
+      "path": "index.html",
+      "content": "[COMPLETE HTML WITH CANVAS AND SCRIPT TAGS]",
+      "file_type": "html"
+    }},
+    {{
+      "path": "style.css",
+      "content": "[COMPLETE CSS WITH RESPONSIVE DESIGN]",
+      "file_type": "css"
+    }},
+    {{
+      "path": "game.js",
+      "content": "[COMPLETE JAVASCRIPT GAME LOGIC]",
+      "file_type": "javascript"
+    }}
+  ],
+  "project_structure": {{
+    "index.html": "Main HTML file with canvas element",
+    "style.css": "Styling and responsive layout",
+    "game.js": "Complete game logic and engine"
+  }},
+  "build_instructions": "Simply open index.html in any modern web browser"
+}}
+
+IMPORTANT:
+- Provide COMPLETE, WORKING code for each file
+- HTML should include canvas element and link to CSS/JS files
+- CSS should make the game responsive and visually appealing
+- JavaScript should be self-contained with game loop, input handling, and rendering
+- Keep total response under 3000 tokens
+- Ensure JSON is properly escaped
+- No explanations, just the JSON response"""
+
+        print(
+            f"[DEBUG] Calling OpenAI API with prompt length: {len(prompt)} characters")
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a professional game developer. Return only valid JSON responses."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=3500,  # Increased for 4 files
+            temperature=0.7
+        )
+
+        print(f"[DEBUG] OpenAI API response: {response}")
+
+        if not response.choices or not response.choices[0].message.content:
+            print("[ERROR] Empty response from OpenAI")
+            return GenCodeResp(
+                success=False,
+                files=[],
+                project_structure={},
+                build_instructions="",
+                error="Empty response from LLM service"
+            )
+
+        content = response.choices[0].message.content.strip()
+        print(f"[DEBUG] OpenAI response length: {len(content)} characters")
+
+        # Handle potential markdown code blocks
+        if content.startswith("```json"):
+            content = content[7:]  # Remove ```json
+        if content.endswith("```"):
+            content = content[:-3]  # Remove ```
+        content = content.strip()
+
+        # Parse the JSON response
+        try:
+            parsed_response = json.loads(content)
+            print(
+                f"[DEBUG] Successfully parsed JSON response with {len(parsed_response.get('files', []))} files")
+
+            # Validate the response structure
+            if not isinstance(parsed_response, dict) or not parsed_response.get('success'):
+                raise ValueError("Invalid response structure")
+
+            files = parsed_response.get('files', [])
+            if not files:
+                raise ValueError("No files generated")
+
+            # Convert to our response format
+            generated_files = []
+            for file_data in files:
+                generated_files.append(GeneratedFile(
+                    path=file_data['path'],
+                    content=file_data['content'],
+                    file_type=file_data['file_type']
+                ))
+
+            return GenCodeResp(
+                success=True,
+                files=generated_files,
+                project_structure=parsed_response.get('project_structure', {}),
+                build_instructions=parsed_response.get(
+                    'build_instructions', 'npm install && npm run dev'),
+                error=None
+            )
+
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse LLM response as JSON: {e}")
+            print(f"[ERROR] Raw content: {content[:500]}...")
+
+            # Fallback: try to extract JSON from text
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                try:
+                    extracted_json = content[json_start:json_end]
+                    parsed_response = json.loads(extracted_json)
+                    print("[DEBUG] Successfully extracted JSON from text response")
+
+                    files = parsed_response.get('files', [])
+                    generated_files = []
+                    for file_data in files:
+                        generated_files.append(GeneratedFile(
+                            path=file_data['path'],
+                            content=file_data['content'],
+                            file_type=file_data['file_type']
+                        ))
+
+                    return GenCodeResp(
+                        success=True,
+                        files=generated_files,
+                        project_structure=parsed_response.get(
+                            'project_structure', {}),
+                        build_instructions=parsed_response.get(
+                            'build_instructions', 'npm install && npm run dev'),
+                        error=None
+                    )
+                except json.JSONDecodeError:
+                    pass
+
+            # Final fallback with minimal working files
+            return GenCodeResp(
+                success=False,
+                files=[],
+                project_structure={},
+                build_instructions="",
+                error=f"Failed to parse LLM response: {str(e)}"
+            )
+
+    except Exception as e:
+        print(f"[ERROR] Exception in generate_code_from_spec: {e}")
+        return GenCodeResp(
+            success=False,
+            files=[],
+            project_structure={},
+            build_instructions="",
+            error=f"Code generation failed: {str(e)}"
+        )
+
+# Add this endpoint after the existing ones
+
+
+@app.post("/llm/generate-code", response_model=GenCodeResp)
+def generate_code(req: GenCodeReq):
+    if not req.game_spec:
+        raise HTTPException(status_code=400, detail="game_spec is required")
+    return generate_code_from_spec(req.game_spec)
+
+
+@app.delete("/vector/clear")
+def clear_vector_db():
+    """Clear all vectors from the collection"""
+    try:
+        # Delete the collection entirely
+        client.delete_collection(collection_name=COLLECTION_NAME)
+
+        # Recreate the empty collection
+        ensure_collection()
+
+        return {"ok": True, "message": f"Collection '{COLLECTION_NAME}' cleared successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}")
+
+@app.delete("/vector/collection")
+def recreate_collection():
+    """Recreate the entire collection (alternative method)"""
+    try:
+        dim = model.get_sentence_embedding_dimension()
+        client.recreate_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
+        )
+        return {"ok": True, "message": f"Collection '{COLLECTION_NAME}' recreated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to recreate collection: {str(e)}")

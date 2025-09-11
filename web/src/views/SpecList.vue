@@ -28,20 +28,29 @@
       <div
         v-for="spec in specs"
         :key="spec.id"
-        class="card hover:shadow-lg transition-shadow duration-200 cursor-pointer"
-        @click="$router.push(`/specs/${spec.id}`)"
+        class="card hover:shadow-lg transition-shadow duration-200"
       >
-        <h3 class="text-lg font-semibold text-gray-900 mb-2">{{ spec.title }}</h3>
-        <p class="text-sm text-gray-500 mb-4">
-          Created {{ formatDate(spec.created_at) }}
-        </p>
-        <div class="flex justify-between items-center">
-          <span class="text-xs bg-primary-100 text-primary-800 px-2 py-1 rounded-full">
-            Game Spec
-          </span>
-          <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-          </svg>
+        <div class="cursor-pointer" @click="$router.push(`/specs/${spec.id}`)">
+          <h3 class="text-lg font-semibold text-gray-900 mb-2">{{ spec.title }}</h3>
+          <p class="text-sm text-gray-500 mb-4">
+            Created {{ formatDate(spec.created_at) }}
+          </p>
+          <div class="flex justify-between items-center mb-4">
+            <span class="text-xs bg-primary-100 text-primary-800 px-2 py-1 rounded-full">
+              Game Spec
+            </span>
+            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Code Generation Status -->
+        <div class="border-t pt-4 mt-4">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-sm font-medium text-gray-700">Code Generation</span>
+          </div>
+          <CodeJobStatus :spec-id="spec.id" />
         </div>
       </div>
     </div>
@@ -64,6 +73,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import CodeJobStatus from '../components/CodeJobStatus.vue'
 
 const specs = ref<any[]>([])
 const loading = ref(true)

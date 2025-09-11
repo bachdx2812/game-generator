@@ -140,7 +140,7 @@
             </nav>
           </div>
 
-          <ose v-if="activeTab === 'markdown'">
+          <div v-if="activeTab === 'markdown'">
             <div class="prose prose-lg max-w-none text-gray-800 bg-white p-6 rounded-lg border shadow-sm overflow-auto max-h-[600px]
                         prose-headings:text-gray-900 prose-headings:font-semibold
                         prose-h1:text-2xl prose-h1:mb-4 prose-h1:mt-6
@@ -160,11 +160,11 @@
                         prose-td:border prose-td:border-gray-300 prose-td:p-2
                         prose-a:text-blue-600 prose-a:underline hover:prose-a:text-blue-800" v-html="renderedMarkdown">
             </div>
-          </ose>
+          </div>
 
           <div v-if="activeTab === 'json'">
-            <pre
-              class="text-sm text-gray-700 bg-gray-50 p-4 rounded-lg overflow-auto max-h-96">{{ JSON.stringify(spec.spec_json, null, 2) }}</pre>
+            <VueJsonPretty :data="spec.spec_json" :show-length="true" :show-line="true" :show-icon="true"
+              class="max-h-96 overflow-auto rounded-lg" />
           </div>
         </div>
       </div>
@@ -173,9 +173,14 @@
 </template>
 
 <script setup lang="ts">
+import VueJsonPretty from 'vue-json-pretty'
+import 'vue-json-pretty/lib/styles.css'
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { marked } from 'marked'
+import { markedHighlight } from 'marked-highlight'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/github-dark.css'
 
 const route = useRoute()
 const spec = ref<any>(null)
@@ -183,7 +188,15 @@ const loading = ref(true)
 const error = ref('')
 const activeTab = ref('markdown')
 
-// Configure marked for better rendering
+// Configure marked with syntax highlighting
+marked.use(markedHighlight({
+  langPrefix: 'hljs language-',
+  highlight(code, lang) {
+    const language = hljs.getLanguage(lang) ? lang : 'plaintext'
+    return hljs.highlight(code, { language }).value
+  }
+}))
+
 marked.setOptions({
   breaks: true,
   gfm: true,

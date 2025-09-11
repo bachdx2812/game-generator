@@ -9,7 +9,9 @@
     "preview": "vite preview --strictPort --port 5173"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "marked": "^16.2.1",
+    "marked-highlight": "^2.2.2",
     "path": "^0.12.7",
     "vue": "^3.4.0",
     "vue-router": "^4.2.5"

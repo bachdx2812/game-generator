@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -180,7 +181,45 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 
 		_, _ = db.Exec(ctx, `UPDATE gen_spec_jobs SET status='COMPLETED', result_spec_id=$2, finished_at=now() WHERE id=$1`, jobID, specID)
 
-		return c.Status(201).JSON(fiber.Map{"job_id": jobID, "status": "COMPLETED", "result_spec_id": specID})
+		var codeJobID string
+		if os.Getenv("AUTO_CODE_GENERATION") == "true" {
+			codeJobID = uuid.New().String()
+			go func() {
+				codeReq := CreateCodeJobReq{
+					GameSpecID: specID,
+					GameSpec:   g.SpecJSON,
+					OutputPath: "/tmp",
+				}
+
+				// Call the existing code generation logic
+				now := time.Now()
+
+				// Insert code job
+				_, err := db.Exec(context.Background(), `
+		INSERT INTO code_jobs (id, game_spec_id, game_spec, output_path, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, 'queued', $5, $6)
+		`, codeJobID, specID, g.SpecJSON, codeReq.OutputPath, now, now)
+
+				if err == nil {
+					// Start background code generation
+					go processCodeGeneration(db, codeJobID, codeReq)
+					log.Printf("[INFO] Auto-triggered code generation job %s for spec %s", codeJobID, specID)
+				}
+			}()
+		}
+
+		response := fiber.Map{
+			"job_id":         jobID,
+			"status":         "COMPLETED",
+			"result_spec_id": specID,
+		}
+
+		if os.Getenv("AUTO_CODE_GENERATION") == "true" {
+			response["code_generation"] = "triggered"
+			response["code_job_id"] = codeJobID
+		}
+
+		return c.Status(201).JSON(response)
 	}
 }
 

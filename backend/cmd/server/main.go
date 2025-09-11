@@ -69,6 +69,12 @@ func main() {
 	api.Get("/specs", handlers.ListSpecs(pool))
 	api.Get("/specs/:id", handlers.GetSpec(pool))
 
+	// Code generation routes
+	app.Post("/api/code-jobs", handlers.PostCodeJob(pool))
+	app.Get("/api/code-jobs/:id", handlers.GetCodeJob(pool))
+	app.Get("/api/specs/:spec_id/code-job", handlers.GetCodeJobBySpecID(pool))
+	app.Post("/api/specs/:spec_id/retry-code", handlers.RetryCodeJob(pool))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
