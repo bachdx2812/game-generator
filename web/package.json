@@ -14,6 +14,7 @@
     "marked-highlight": "^2.2.2",
     "path": "^0.12.7",
     "vue": "^3.4.0",
+    "vue-json-pretty": "^2.5.0",
     "vue-router": "^4.2.5"
   },
   "devDependencies": {

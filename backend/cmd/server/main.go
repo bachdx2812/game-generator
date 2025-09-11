@@ -23,10 +23,10 @@ func main() {
 
 	ctx := context.Background()
 
-	// Debug: Log the DB_DSN being used
-	dbDSN := os.Getenv("DB_DSN")
+	// Debug: Log the DATABASE_URL being used
+	dbDSN := os.Getenv("DATABASE_URL")
 	if dbDSN == "" {
-		log.Fatal("DB_DSN environment variable is not set")
+		log.Fatal("DATABASE_URL environment variable is not set")
 	}
 	log.Printf("[DEBUG] Connecting to database with DSN: %s", dbDSN)
 
@@ -68,6 +68,7 @@ func main() {
 	api.Get("/spec-jobs/:id", handlers.GetJob(pool))
 	api.Get("/specs", handlers.ListSpecs(pool))
 	api.Get("/specs/:id", handlers.GetSpec(pool))
+	api.Delete("/specs/:id", handlers.DeleteSpec(pool))
 
 	// Code generation routes
 	app.Post("/api/code-jobs", handlers.PostCodeJob(pool))

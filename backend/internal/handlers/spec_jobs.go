@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -95,14 +96,14 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 
-		llmvec := os.Getenv("LLMVEC_URL")
-		if llmvec == "" {
-			llmvec = "http://localhost:8000"
+		llmBackend := os.Getenv("LLM_BACKEND_URL")
+		if llmBackend == "" {
+			llmBackend = "http://localhost:8000"
 		}
 
 		greq := genSpecReq{Brief: req.Brief, Constraints: req.Constraints}
 		gb, _ := json.Marshal(greq)
-		resp, err := http.Post(llmvec+"/llm/generate-spec", "application/json", bytes.NewReader(gb))
+		resp, err := http.Post(llmBackend+"/llm/generate-spec", "application/json", bytes.NewReader(gb))
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadGateway, "llm generate-spec failed: "+err.Error())
 		}
@@ -126,7 +127,7 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 		}
 		sreq := searchReq{Text: normText, TopK: topK, Threshold: threshold}
 		sb, _ := json.Marshal(sreq)
-		resp2, err := http.Post(llmvec+"/vector/search", "application/json", bytes.NewReader(sb))
+		resp2, err := http.Post(llmBackend+"/vector/search", "application/json", bytes.NewReader(sb))
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadGateway, "vector search failed: "+err.Error())
 		}
@@ -170,7 +171,7 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 
 		up := upsertReq{SpecID: specID, Text: normText, Payload: map[string]interface{}{"title": g.Title}}
 		ub, _ := json.Marshal(up)
-		resp3, err := http.Post(llmvec+"/vector/upsert", "application/json", bytes.NewReader(ub))
+		resp3, err := http.Post(llmBackend+"/vector/upsert", "application/json", bytes.NewReader(ub))
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadGateway, "vector upsert failed: "+err.Error())
 		}
@@ -281,14 +282,102 @@ func ListSpecs(db *pgxpool.Pool) fiber.Handler {
 
 func GetSpec(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		ctx := context.Background()
 		id := c.Params("id")
-		var title, brief, specMD string
-		var specJSON map[string]interface{}
-		row := db.QueryRow(ctx, `SELECT title,brief,spec_markdown,spec_json FROM game_specs WHERE id=$1`, id)
-		if err := row.Scan(&title, &brief, &specMD, &specJSON); err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "not found")
+		ctx := context.Background()
+
+		var spec struct {
+			ID           string `json:"id"`
+			Title        string `json:"title"`
+			Brief        string `json:"brief"`
+			SpecMarkdown string `json:"spec_markdown"`
+			SpecJSON     []byte `json:"spec_json"`
 		}
-		return c.JSON(fiber.Map{"id": id, "title": title, "brief": brief, "spec_markdown": specMD, "spec_json": specJSON})
+
+		err := db.QueryRow(ctx, `
+			SELECT id, title, brief, spec_markdown, spec_json
+			FROM game_specs
+			WHERE id = $1
+		`, id).Scan(&spec.ID, &spec.Title, &spec.Brief, &spec.SpecMarkdown, &spec.SpecJSON)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fiber.NewError(fiber.StatusNotFound, "Spec not found")
+			}
+			return fiber.NewError(fiber.StatusInternalServerError, "Database error")
+		}
+
+		// Parse spec_json
+		var specJSON map[string]interface{}
+		if err := json.Unmarshal(spec.SpecJSON, &specJSON); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to parse spec JSON")
+		}
+
+		return c.JSON(fiber.Map{
+			"id":            spec.ID,
+			"title":         spec.Title,
+			"brief":         spec.Brief,
+			"spec_markdown": spec.SpecMarkdown,
+			"spec_json":     specJSON,
+		})
+	}
+}
+
+// DeleteSpec deletes a game spec from both database and vector database
+func DeleteSpec(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		ctx := context.Background()
+
+		// First, check if the spec exists
+		var exists bool
+		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM game_specs WHERE id = $1)", id).Scan(&exists)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Database error")
+		}
+
+		if !exists {
+			return fiber.NewError(fiber.StatusNotFound, "Spec not found")
+		}
+
+		// Get LLM backend URL
+		llmBackend := os.Getenv("LLM_BACKEND_URL")
+		if llmBackend == "" {
+			llmBackend = "http://localhost:8000"
+		}
+
+		// Delete from vector database first
+		vectorDeleteURL := fmt.Sprintf("%s/vector/spec/%s", llmBackend, id)
+		req, err := http.NewRequest("DELETE", vectorDeleteURL, nil)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to create delete request")
+		}
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete from vector database")
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete from vector database")
+		}
+
+		// Delete related code_jobs first to avoid foreign key constraint violation
+		_, err = db.Exec(ctx, "DELETE FROM code_jobs WHERE game_spec_id = $1", id)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete related code jobs")
+		}
+
+		// Now delete the game spec
+		_, err = db.Exec(ctx, "DELETE FROM game_specs WHERE id = $1", id)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete from database")
+		}
+
+		return c.JSON(fiber.Map{
+			"message": "Spec deleted successfully",
+			"id":      id,
+		})
 	}
 }

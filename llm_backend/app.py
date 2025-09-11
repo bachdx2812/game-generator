@@ -82,7 +82,7 @@ class UpsertReq(BaseModel):
 
 
 def load_spec_prompt_template() -> str:
-    """Load the detailed spec prompt template from llmvec directory"""
+    """Load the detailed spec prompt template from llm_backend directory"""
     current_dir = Path(__file__).parent
     prompt_path = current_dir / "spec_prompt.txt"
 
@@ -275,79 +275,108 @@ def generate_code_from_spec(game_spec: Dict[str, Any]) -> GenCodeResp:
 
     try:
         # Extract key information from GameSpec
-        title = game_spec.get("title", "Generated Game")
         genre = game_spec.get("genre", "arcade")
         mechanics = game_spec.get("mechanics", [])
         controls = game_spec.get("controls", ["arrow_keys"])
-        duration = game_spec.get("duration_sec", 60)
-        platform = game_spec.get("platform", ["web"])
+        title = game_spec.get("title", "Game")
 
-        # Generate only essential files to stay within token limits
-        prompt = f"""You are a senior web game developer. Generate a simple but complete HTML5 game based on this GameSpec.
+        # Extract essential game rules from spec_markdown
+        spec_markdown = game_spec.get('spec_markdown', '')
 
-GameSpec JSON:
-{json.dumps(game_spec, indent=2)}
+        # Parse key sections from the markdown
+        essential_info = {
+            'overview': '',
+            'rules': '',
+            'win_conditions': '',
+            'controls': ''
+        }
 
-REQUIREMENTS:
-1. Generate ONLY 3 files: index.html, style.css, and game.js
-2. Use vanilla HTML5, CSS3, and JavaScript (ES6+) - NO frameworks or build tools
-3. Keep each file under 150 lines for readability
-4. Include complete game loop with requestAnimationFrame
-5. Implement input handling for: {', '.join(controls)}
-6. Add basic collision detection and scoring
-7. Make it responsive and mobile-friendly
-8. Include simple sound effects using Web Audio API
-9. Make it immediately playable by opening index.html in browser
+        if spec_markdown:
+            lines = spec_markdown.split('\n')
+            current_section = None
 
-RETURN FORMAT - MUST be valid JSON:
+            for line in lines:
+                line_lower = line.lower().strip()
+
+                # Identify key sections
+                if 'overview' in line_lower and line.startswith('#'):
+                    current_section = 'overview'
+                elif any(keyword in line_lower for keyword in ['rules', 'legal moves', 'gameplay']) and line.startswith('#'):
+                    current_section = 'rules'
+                elif any(keyword in line_lower for keyword in ['win', 'lose', 'draw', 'victory']) and line.startswith('#'):
+                    current_section = 'win_conditions'
+                elif 'control' in line_lower and line.startswith('#'):
+                    current_section = 'controls'
+                elif line.startswith('#') and current_section:
+                    current_section = None  # New section, stop collecting
+
+                # Collect content for current section (limit to prevent token overflow)
+                if current_section and not line.startswith('#') and line.strip():
+                    if len(essential_info[current_section]) < 300:  # Limit each section
+                        essential_info[current_section] += line + '\n'
+
+        # Create optimized prompt focusing on implementation
+        prompt = f"""Generate a complete HTML5 game: {title}
+
+Game Type: {genre}
+Core Mechanics: {', '.join(mechanics[:3]) if mechanics else 'standard game mechanics'}
+Controls: {', '.join(controls)}
+
+Game Overview:
+{essential_info['overview'][:200]}
+
+Key Rules:
+{essential_info['rules'][:300]}
+
+Win/Lose Conditions:
+{essential_info['win_conditions'][:200]}
+
+Generate EXACTLY 3 files in this JSON format:
 {{
   "success": true,
   "files": [
-    {{
-      "path": "index.html",
-      "content": "[COMPLETE HTML WITH CANVAS AND SCRIPT TAGS]",
-      "file_type": "html"
-    }},
-    {{
-      "path": "style.css",
-      "content": "[COMPLETE CSS WITH RESPONSIVE DESIGN]",
-      "file_type": "css"
-    }},
-    {{
-      "path": "game.js",
-      "content": "[COMPLETE JAVASCRIPT GAME LOGIC]",
-      "file_type": "javascript"
-    }}
+    {{"path": "index.html", "content": "[HTML]", "file_type": "html"}},
+    {{"path": "style.css", "content": "[CSS]", "file_type": "css"}},
+    {{"path": "game.js", "content": "[JAVASCRIPT]", "file_type": "javascript"}}
   ],
-  "project_structure": {{
-    "index.html": "Main HTML file with canvas element",
-    "style.css": "Styling and responsive layout",
-    "game.js": "Complete game logic and engine"
-  }},
-  "build_instructions": "Simply open index.html in any modern web browser"
+  "project_structure": {{}},
+  "build_instructions": "Open index.html in browser"
 }}
 
-IMPORTANT:
-- Provide COMPLETE, WORKING code for each file
-- HTML should include canvas element and link to CSS/JS files
-- CSS should make the game responsive and visually appealing
-- JavaScript should be self-contained with game loop, input handling, and rendering
-- Keep total response under 3000 tokens
-- Ensure JSON is properly escaped
-- No explanations, just the JSON response"""
+Requirements:
+- Vanilla HTML5/CSS3/JavaScript only
+- Canvas-based with requestAnimationFrame game loop
+- Mobile-responsive with touch controls
+- Complete game state management
+- Working collision detection and physics
+- Sound effects and visual feedback
+- Score system and game over/restart
+- Implement ALL specified game mechanics
+- Clean, readable code with proper error handling
 
-        print(
-            f"[DEBUG] Calling OpenAI API with prompt length: {len(prompt)} characters")
+IMPORTANT: Generate complete working code, not placeholders!"""
 
-        response = openai_client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a professional game developer. Return only valid JSON responses."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=3500,  # Increased for 4 files
-            temperature=0.7
-        )
+        print(f"[DEBUG] Optimized prompt length: {len(prompt)} characters")
+
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a professional game developer. Generate complete, working HTML5 games with actual implementation code."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=4000,  # Reduced to leave more room for input
+                temperature=0.3
+            )
+        except Exception as api_error:
+            print(f"[ERROR] OpenAI API call failed: {api_error}")
+            return GenCodeResp(
+                success=False,
+                files=[],
+                project_structure={},
+                build_instructions="",
+                error=f"OpenAI API call failed: {str(api_error)}"
+            )
 
         print(f"[DEBUG] OpenAI API response: {response}")
 
@@ -358,11 +387,12 @@ IMPORTANT:
                 files=[],
                 project_structure={},
                 build_instructions="",
-                error="Empty response from LLM service"
+                error="Empty response from OpenAI API - check API key and credits"
             )
 
         content = response.choices[0].message.content.strip()
         print(f"[DEBUG] OpenAI response length: {len(content)} characters")
+        print(f"[DEBUG] OpenAI response preview: {content[:200]}...")
 
         # Handle potential markdown code blocks
         if content.startswith("```json"):
@@ -399,7 +429,7 @@ IMPORTANT:
                 files=generated_files,
                 project_structure=parsed_response.get('project_structure', {}),
                 build_instructions=parsed_response.get(
-                    'build_instructions', 'npm install && npm run dev'),
+                    'build_instructions', 'Open index.html in any modern web browser to play'),
                 error=None
             )
 
@@ -431,7 +461,7 @@ IMPORTANT:
                         project_structure=parsed_response.get(
                             'project_structure', {}),
                         build_instructions=parsed_response.get(
-                            'build_instructions', 'npm install && npm run dev'),
+                            'build_instructions', 'Open index.html in any modern web browser to play'),
                         error=None
                     )
                 except json.JSONDecodeError:
@@ -478,7 +508,9 @@ def clear_vector_db():
 
         return {"ok": True, "message": f"Collection '{COLLECTION_NAME}' cleared successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to clear collection: {str(e)}")
+
 
 @app.delete("/vector/collection")
 def recreate_collection():
@@ -491,4 +523,20 @@ def recreate_collection():
         )
         return {"ok": True, "message": f"Collection '{COLLECTION_NAME}' recreated successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to recreate collection: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to recreate collection: {str(e)}")
+
+
+@app.delete("/vector/spec/{spec_id}")
+def delete_spec_from_vector(spec_id: str):
+    """Delete a specific spec from the vector database"""
+    try:
+        # Delete the point with the given spec_id
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=[spec_id]
+        )
+        return {"ok": True, "message": f"Spec '{spec_id}' deleted from vector database successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete spec from vector database: {str(e)}")

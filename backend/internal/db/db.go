@@ -9,7 +9,7 @@ import (
 )
 
 func Open(ctx context.Context) (*pgxpool.Pool, error) {
-	dsn := os.Getenv("DB_DSN")
+	dsn := os.Getenv("DATABASE_URL")
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, err

@@ -34,6 +34,10 @@
           <button @click="copyToClipboard(JSON.stringify(spec.spec_json, null, 2))" class="btn-secondary">
             Copy JSON
           </button>
+          <button @click="showDeleteDialog = true"
+            class="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+            Delete Spec
+          </button>
           <router-link to="/" class="btn-primary">
             Generate New
           </router-link>
@@ -169,23 +173,33 @@
         </div>
       </div>
     </div>
+
+    <!-- Delete Confirmation Dialog -->
+    <ConfirmDialog :show="showDeleteDialog" :loading="deleteLoading" title="Delete Specification"
+      :message="`Are you sure you want to delete '${spec?.title}'? This action cannot be undone and will remove the spec from both the database and vector database.`"
+      confirm-text="Delete" @confirm="deleteSpec" @cancel="showDeleteDialog = false" />
   </div>
 </template>
 
 <script setup lang="ts">
+import VueJsonPretty from 'vue-json-pretty';
 import 'vue-json-pretty/lib/styles.css'
 import { ref, onMounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import { markedHighlight } from 'marked-highlight'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const route = useRoute()
+const router = useRouter()
 const spec = ref<any>(null)
 const loading = ref(true)
 const error = ref('')
 const activeTab = ref('markdown')
+const showDeleteDialog = ref(false)
+const deleteLoading = ref(false)
 
 // Configure marked with syntax highlighting
 marked.use(markedHighlight({
@@ -223,7 +237,27 @@ const fetchSpec = async () => {
   }
 }
 
-// Remove the unused contentMarkdown function
+const deleteSpec = async () => {
+  try {
+    deleteLoading.value = true
+    const response = await fetch(`/api/specs/${route.params.id}`, {
+      method: 'DELETE'
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    // Success - redirect to specs list
+    router.push('/specs')
+  } catch (err) {
+    console.error('Error deleting spec:', err)
+    error.value = 'Failed to delete specification. Please try again.'
+    showDeleteDialog.value = false
+  } finally {
+    deleteLoading.value = false
+  }
+}
 
 const copyToClipboard = async (text: string) => {
   try {

@@ -46,11 +46,11 @@ type GeneratedFile struct {
 }
 
 type LLMCodeResponse struct {
-	Success            bool                   `json:"success"`
-	Files              []GeneratedFile        `json:"files"`
-	ProjectStructure   map[string]interface{} `json:"project_structure"`
-	BuildInstructions  string                 `json:"build_instructions"`
-	Error              *string                `json:"error,omitempty"`
+	Success           bool                   `json:"success"`
+	Files             []GeneratedFile        `json:"files"`
+	ProjectStructure  map[string]interface{} `json:"project_structure"`
+	BuildInstructions string                 `json:"build_instructions"`
+	Error             *string                `json:"error,omitempty"`
 }
 
 func PostCodeJob(db *pgxpool.Pool) fiber.Handler {
@@ -183,8 +183,8 @@ func RetryCodeJob(db *pgxpool.Pool) fiber.Handler {
 		go processCodeGeneration(db, jobID, req)
 
 		return c.JSON(fiber.Map{
-			"job_id": jobID,
-			"status": "queued",
+			"job_id":  jobID,
+			"status":  "queued",
 			"message": "Code generation retry started",
 		})
 	}
@@ -198,11 +198,23 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 	var gameSpec map[string]interface{}
 	if req.GameSpecID != "" {
 		// Fetch from database
-		err := db.QueryRow(context.Background(), "SELECT spec_json FROM game_specs WHERE id = $1", req.GameSpecID).Scan(&gameSpec)
+		var specJSON []byte
+		var specMarkdown string
+		err := db.QueryRow(context.Background(), "SELECT spec_json, spec_markdown FROM game_specs WHERE id = $1", req.GameSpecID).Scan(&specJSON, &specMarkdown)
 		if err != nil {
 			updateJobStatus(db, jobID, "failed", 0, []string{"Failed to fetch GameSpec from database"})
 			return
 		}
+
+		// Parse JSON into map
+		err = json.Unmarshal(specJSON, &gameSpec)
+		if err != nil {
+			updateJobStatus(db, jobID, "failed", 0, []string{"Failed to parse GameSpec JSON"})
+			return
+		}
+
+		// Add spec_markdown as additional field
+		gameSpec["spec_markdown"] = specMarkdown
 	} else {
 		gameSpec = req.GameSpec
 	}
@@ -254,10 +266,9 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 }
 
 func callLLMCodeGeneration(gameSpec map[string]interface{}) (*LLMCodeResponse, error) {
-	// Get LLM service URL from environment or use default
-	llmURL := os.Getenv("LLM_SERVICE_URL")
+	llmURL := os.Getenv("LLM_BACKEND_URL")
 	if llmURL == "" {
-		llmURL = "http://localhost:8000" // Default llmvec service URL
+		llmURL = "http://localhost:8000"
 	}
 
 	// Prepare request
