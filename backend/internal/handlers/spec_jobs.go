@@ -353,16 +353,25 @@ func DeleteSpec(db *pgxpool.Pool) fiber.Handler {
 			return fiber.NewError(fiber.StatusNotFound, "Spec not found")
 		}
 
-		// Initialize git repository for cleanup
+		// Initialize git repository for cleanup with enhanced error handling
 		gitRepo := utils.NewGitRepo()
+		gitCleanupSuccess := false
 		if gitRepo.IsConfigured() {
-			if err := gitRepo.InitializeRepo(); err == nil {
+			log.Printf("[INFO] Git repository configured, attempting to remove folder for spec %s", id)
+			if err := gitRepo.InitializeRepo(); err != nil {
+				log.Printf("[ERROR] Failed to initialize git repo for cleanup: %v", err)
+			} else {
 				// Find and remove game folders associated with this spec
 				if err := gitRepo.RemoveGameFolders(id, gameTitle); err != nil {
 					// Log the error but don't fail the deletion
-					log.Printf("Warning: Failed to remove game folders from git: %v", err)
+					log.Printf("[ERROR] Failed to remove game folders from git: %v", err)
+				} else {
+					log.Printf("[SUCCESS] Successfully removed git folder for spec %s", id)
+					gitCleanupSuccess = true
 				}
 			}
+		} else {
+			log.Printf("[INFO] Git repository not configured, skipping folder cleanup for spec %s", id)
 		}
 
 		// Get LLM backend URL
@@ -401,9 +410,23 @@ func DeleteSpec(db *pgxpool.Pool) fiber.Handler {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete from database")
 		}
 
-		return c.JSON(fiber.Map{
+		// Prepare response with git cleanup status
+		response := fiber.Map{
 			"message": "Spec deleted successfully",
 			"id":      id,
-		})
+		}
+
+		if gitRepo.IsConfigured() {
+			if gitCleanupSuccess {
+				response["git_cleanup"] = "success"
+			} else {
+				response["git_cleanup"] = "failed"
+				response["git_cleanup_warning"] = "Git folder may still exist in repository"
+			}
+		} else {
+			response["git_cleanup"] = "skipped - not configured"
+		}
+
+		return c.JSON(response)
 	}
 }

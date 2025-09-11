@@ -265,16 +265,16 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 		}
 
 		// Pass the combined game spec to CreateGameFolder
-		projectPath, err = gitRepo.CreateGameFolder(jobID, gameTitle, combinedGameSpec)
+		projectPath, err = gitRepo.CreateGameFolder(req.GameSpecID, gameTitle, combinedGameSpec)
 		if err != nil {
 			updateJobStatus(db, jobID, "failed", 0, []string{fmt.Sprintf("Failed to create game folder: %v", err)})
 			return
 		}
 
-		// Construct GitHub URL directly: GIT_REPO_URL + '/tree/main/' + gameID
+		// Construct GitHub URL directly: GIT_REPO_URL + '/tree/main/' + gameSpecID
 		repoURL := os.Getenv("GIT_REPO_URL")
 		repoURL = strings.TrimSuffix(repoURL, ".git")
-		outputURL = fmt.Sprintf("%s/tree/main/%s", repoURL, jobID)
+		outputURL = fmt.Sprintf("%s/tree/main/%s", repoURL, req.GameSpecID)
 	} else {
 		// Fallback to /tmp
 		projectPath = filepath.Join(req.OutputPath, fmt.Sprintf("game_%s_%s", jobID[:8], time.Now().Format("20060102_150405")))
@@ -304,7 +304,7 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 			gameTitle = title
 		}
 
-		if err := gitRepo.CommitAndPush(projectPath, gameTitle, jobID); err != nil {
+		if err := gitRepo.CommitAndPush(projectPath, gameTitle, req.GameSpecID); err != nil {
 			updateJobStatus(db, jobID, "completed", 100, []string{
 				"Code generation completed",
 				"Warning: Failed to push to git repository",

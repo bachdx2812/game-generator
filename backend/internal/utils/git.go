@@ -3,6 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -271,22 +272,32 @@ func (g *GitRepo) RemoveGameFolders(gameID, gameTitle string) error {
 		return fmt.Errorf("git repository not configured")
 	}
 
+	log.Printf("[INFO] Starting git folder removal for gameID: %s, title: %s", gameID, gameTitle)
+
 	// Pull latest changes before making deletions
 	if err := g.pullFromRemote(); err != nil {
-		return fmt.Errorf("failed to pull latest changes: %v", err)
+		log.Printf("[WARNING] Failed to pull latest changes before deletion: %v", err)
+		// Continue with deletion even if pull fails
 	}
 
 	// Check if the folder exists
 	folderPath := filepath.Join(g.RepoPath, gameID)
+	log.Printf("[INFO] Checking for folder at path: %s", folderPath)
+
 	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
 		// Folder doesn't exist, nothing to remove
+		log.Printf("[INFO] Folder %s does not exist, nothing to remove", gameID)
 		return nil
 	}
+
+	log.Printf("[INFO] Found folder %s, proceeding with removal", gameID)
 
 	// Remove the folder
 	if err := os.RemoveAll(folderPath); err != nil {
 		return fmt.Errorf("failed to remove folder %s: %v", gameID, err)
 	}
+
+	log.Printf("[INFO] Successfully removed folder from filesystem: %s", gameID)
 
 	// Stage the deletion
 	cmd := exec.Command("git", "add", "-A")
@@ -295,11 +306,14 @@ func (g *GitRepo) RemoveGameFolders(gameID, gameTitle string) error {
 		return fmt.Errorf("failed to stage deletion: %v", err)
 	}
 
+	log.Printf("[INFO] Staged deletion for git commit")
+
 	// Check if there are any changes to commit
 	cmd = exec.Command("git", "diff", "--cached", "--quiet")
 	cmd.Dir = g.RepoPath
 	if err := cmd.Run(); err == nil {
 		// No changes to commit
+		log.Printf("[INFO] No changes to commit after staging deletion")
 		return nil
 	}
 
@@ -310,14 +324,19 @@ func (g *GitRepo) RemoveGameFolders(gameID, gameTitle string) error {
 	}
 	commitMessage := fmt.Sprintf(commitTemplate, gameTitle, gameID)
 
+	log.Printf("[INFO] Committing deletion with message: %s", commitMessage)
+
 	cmd = exec.Command("git", "commit", "-m", commitMessage)
 	cmd.Dir = g.RepoPath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to commit folder deletion: %v", err)
 	}
 
+	log.Printf("[INFO] Successfully committed folder deletion")
+
 	// Push to remote if auto-push is enabled
 	if g.AutoPush {
+		log.Printf("[INFO] Auto-push enabled, pushing deletion to remote")
 		// Try to push to main branch first
 		cmd = exec.Command("git", "push", "origin", "main")
 		cmd.Dir = g.RepoPath
@@ -329,6 +348,9 @@ func (g *GitRepo) RemoveGameFolders(gameID, gameTitle string) error {
 				return fmt.Errorf("failed to push deletion to remote: %v", err)
 			}
 		}
+		log.Printf("[INFO] Successfully pushed folder deletion to remote")
+	} else {
+		log.Printf("[INFO] Auto-push disabled, deletion committed locally only")
 	}
 
 	return nil
