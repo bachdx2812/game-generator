@@ -173,7 +173,6 @@
 </template>
 
 <script setup lang="ts">
-import VueJsonPretty from 'vue-json-pretty'
 import 'vue-json-pretty/lib/styles.css'
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
