@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -63,7 +61,12 @@ func PostCodeJob(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to create job"})
 		}
 
-		// Start background processing
+		// Step 1: Update game spec state to 'creating' and return immediately
+		if err := updateGameSpecState(db, req.GameSpecID, StateCreating, "Code generation job created"); err != nil {
+			log.Printf("Failed to update initial state: %v", err)
+		}
+
+		// Steps 2-5: Start background processing in goroutine
 		go processCodeGeneration(db, jobID, req)
 
 		return c.JSON(fiber.Map{
@@ -124,52 +127,6 @@ func GetCodeJobBySpecID(db *pgxpool.Pool) fiber.Handler {
 	}
 }
 
-// RetryCodeJob creates a new code generation job for failed ones
-func RetryCodeJob(db *pgxpool.Pool) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		specID := c.Params("spec_id")
-		if specID == "" {
-			return c.Status(400).JSON(fiber.Map{"error": "Spec ID is required"})
-		}
-
-		// Get the game spec
-		var gameSpec map[string]interface{}
-		err := db.QueryRow(context.Background(), "SELECT spec_json FROM game_specs WHERE id = $1", specID).Scan(&gameSpec)
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "Game spec not found"})
-		}
-
-		// Create new code job
-		req := CreateCodeJobReq{
-			GameSpecID: specID,
-			GameSpec:   gameSpec,
-			OutputPath: "/tmp",
-		}
-
-		jobID := uuid.New().String()
-		now := time.Now()
-
-		// Insert job into database
-		_, err = db.Exec(context.Background(), `
-			INSERT INTO code_jobs (id, game_spec_id, game_spec, output_path, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, 'queued', $5, $6)
-		`, jobID, req.GameSpecID, req.GameSpec, req.OutputPath, now, now)
-
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to create retry job"})
-		}
-
-		// Start background processing
-		go processCodeGeneration(db, jobID, req)
-
-		return c.JSON(fiber.Map{
-			"job_id":  jobID,
-			"status":  "queued",
-			"message": "Code generation retry started",
-		})
-	}
-}
-
 func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq) {
 	updateJobStatus(db, jobID, "processing", 20, []string{"Starting automated git folder generation"})
 
@@ -210,76 +167,63 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 
 	// Initialize git repository
 	gitRepo := utils.NewGitRepo()
-	var outputURL string
-
 	if !gitRepo.IsConfigured() {
-		updateJobStatus(db, jobID, "failed", 0, []string{"Git repository not configured. Automated workflow requires git integration."})
+		updateJobStatus(db, jobID, "failed", 0, []string{"Git repository not configured"})
 		return
 	}
 
-	if err := gitRepo.InitializeRepo(); err != nil {
-		updateJobStatus(db, jobID, "failed", 0, []string{fmt.Sprintf("Failed to initialize git repo: %v", err)})
-		return
-	}
+	updateJobStatus(db, jobID, "processing", 60, []string{"Creating game folder with README.md"})
 
-	updateJobStatus(db, jobID, "processing", 60, []string{"Git repository initialized"})
-
-	// Extract game title from spec
-	gameTitle := "untitled-game"
-	if title, ok := combinedGameSpec["title"].(string); ok && title != "" {
-		gameTitle = title
-	}
-
-	// Create game folder with README containing the game spec
-	projectPath, err := gitRepo.CreateGameFolder(req.GameSpecID, gameTitle, combinedGameSpec)
+	// Create game folder with README.md (correct function signature: gameID, gameTitle, gameSpec)
+	gamePath, err := gitRepo.CreateGameFolder(req.GameSpecID, gameSpec.Title, combinedGameSpec)
 	if err != nil {
 		updateJobStatus(db, jobID, "failed", 0, []string{fmt.Sprintf("Failed to create game folder: %v", err)})
 		return
 	}
 
-	updateJobStatus(db, jobID, "processing", 80, []string{"Game folder created with README.md", fmt.Sprintf("Path: %s", projectPath)})
+	updateJobStatus(db, jobID, "processing", 80, []string{"Committing and pushing to repository"})
 
-	// Construct GitHub URL
-	repoURL := os.Getenv("GIT_REPO_URL")
-	repoURL = strings.TrimSuffix(repoURL, ".git")
-	outputURL = fmt.Sprintf("%s/tree/main/%s", repoURL, req.GameSpecID)
-
-	// Commit and push the README-only folder
-	if err := gitRepo.CommitAndPush(projectPath, gameTitle, req.GameSpecID); err != nil {
-		updateJobStatus(db, jobID, "completed", 100, []string{
-			"Automated generation completed",
-			"Warning: Failed to push to git repository",
-			fmt.Sprintf("Git error: %v", err),
-		})
-	} else {
-		// After successful push, automatically trigger Devin task
-		if devinSessionID, err := gitRepo.CreateDevinTask(req.GameSpecID, gameTitle); err != nil {
-			log.Printf("Warning: Failed to create Devin task: %v", err)
-			updateJobStatus(db, jobID, "completed", 100, []string{
-				"Automated generation completed successfully",
-				"README.md committed and pushed to git repository",
-				fmt.Sprintf("GitHub URL: %s", outputURL),
-				"Warning: Failed to create Devin task",
-			})
-		} else {
-			// Update game spec with Devin session ID
-			devinSessionID = strings.TrimPrefix(devinSessionID, "devin-")
-			_, err := db.Exec(ctx, "UPDATE game_specs SET devin_session_id = $1 WHERE id = $2", devinSessionID, req.GameSpecID)
-			if err != nil {
-				log.Printf("Warning: Failed to update game spec with Devin session ID: %v", err)
-			}
-
-			updateJobStatus(db, jobID, "completed", 100, []string{
-				"Automated generation completed successfully",
-				"README.md committed and pushed to git repository",
-				fmt.Sprintf("GitHub URL: %s", outputURL),
-				fmt.Sprintf("Devin task created: %s", devinSessionID),
-			})
-		}
+	// Commit and push changes (correct function signature: gamePath, gameTitle, gameID)
+	if err := gitRepo.CommitAndPush(gamePath, gameSpec.Title, req.GameSpecID); err != nil {
+		updateJobStatus(db, jobID, "failed", 0, []string{fmt.Sprintf("Failed to commit and push: %v", err)})
+		return
 	}
 
-	// Update output path in database with GitHub URL
-	db.Exec(context.Background(), "UPDATE code_jobs SET output_path = $1 WHERE id = $2", outputURL, jobID)
+	// Step 3: Update to git_inited after successful git operations
+	if err := updateGameSpecState(db, req.GameSpecID, StateGitInited, "Git repository initialized and README.md pushed"); err != nil {
+		log.Printf("Failed to update to git_inited state: %v", err)
+	}
+
+	updateJobStatus(db, jobID, "processing", 85, []string{"Git operations completed, starting Devin code generation"})
+
+	// Step 4: Update to code_generating and create Devin task
+	if err := updateGameSpecState(db, req.GameSpecID, StateCodeGenerating, "Starting Devin code generation"); err != nil {
+		log.Printf("Failed to update to code_generating state: %v", err)
+	}
+
+	// Create Devin task for actual code generation
+	sessionID, err := gitRepo.CreateDevinTask(req.GameSpecID, gameSpec.Title)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create Devin task for spec %s: %v", req.GameSpecID, err)
+		updateJobStatus(db, jobID, "failed", 85, []string{fmt.Sprintf("Failed to create Devin task: %v", err)})
+		return
+	}
+
+	// Store session ID in database
+	_, err = db.Exec(ctx, `UPDATE game_specs SET devin_session_id = $1 WHERE id = $2`, sessionID, req.GameSpecID)
+	if err != nil {
+		log.Printf("[ERROR] Failed to store Devin session ID in database: %v", err)
+	}
+
+	updateJobStatus(db, jobID, "processing", 90, []string{fmt.Sprintf("Devin task created with session ID: %s", sessionID)})
+
+	updateJobStatus(db, jobID, "completed", 100, []string{
+		"Git repository setup completed and Devin task created",
+		fmt.Sprintf("Devin session: https://app.devin.ai/sessions/%s", sessionID),
+		"Monitoring Devin progress for completion...",
+	})
+
+	log.Printf("[SUCCESS] Code generation pipeline initiated for spec %s with Devin session %s", req.GameSpecID, sessionID)
 }
 
 func updateJobStatus(db *pgxpool.Pool, jobID, status string, progress int, logs []string) {

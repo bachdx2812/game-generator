@@ -13,3 +13,7 @@ migrate-up:
 
 migrate-down:
 	migrate -path ./migrations -database "$(DATABASE_URL)" down 1
+
+migrate-reset:
+	migrate -path ./migrations -database "$(DATABASE_URL)" drop
+	migrate -path ./migrations -database "$(DATABASE_URL)" up

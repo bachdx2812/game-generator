@@ -46,8 +46,8 @@
               </svg>
             </div>
             <div class="ml-4">
-              <p class="text-sm font-medium text-gray-600">Completed</p>
-              <p class="text-2xl font-bold text-gray-900">{{ completedSpecs }}</p>
+              <p class="text-sm font-medium text-gray-600">Code Generated</p>
+              <p class="text-2xl font-bold text-gray-900">{{ codeGeneratedSpecs }}</p>
             </div>
           </div>
         </div>
@@ -123,6 +123,13 @@
               <div class="flex-1">
                 <h3 class="text-lg font-semibold text-gray-900 mb-1">{{ spec.title }}</h3>
                 <p class="text-sm text-gray-600 line-clamp-2">{{ spec.brief }}</p>
+                <!-- Add state indicator -->
+                <div class="mt-2">
+                  <span :class="getStateClass(spec.state)" class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium">
+                    <span :class="getStateDotClass(spec.state)" class="w-2 h-2 rounded-full mr-1"></span>
+                    {{ getStateLabel(spec.state) }}
+                  </span>
+                </div>
               </div>
               <div class="flex flex-col items-end space-y-1">
                 <span class="text-xs text-gray-500">{{ formatDate(spec.created_at) }}</span>
@@ -209,11 +216,48 @@ const completedSpecs = computed(() => {
   return specs.value.filter(spec => spec.code_job_status === 'completed').length
 })
 
+const codeGeneratedSpecs = computed(() => {
+  return specs.value.filter(spec => spec.state === 'code_generated').length
+})
+
 const inProgressSpecs = computed(() => {
   return specs.value.filter(spec =>
-    spec.code_job_status === 'pending' || spec.code_job_status === 'running'
+    ['creating', 'git_initing', 'git_inited', 'code_generating'].includes(spec.state)
   ).length
 })
+
+const getStateClass = (state) => {
+  const stateClasses = {
+    'creating': 'bg-blue-100 text-blue-800',
+    'git_initing': 'bg-yellow-100 text-yellow-800',
+    'git_inited': 'bg-indigo-100 text-indigo-800',
+    'code_generating': 'bg-purple-100 text-purple-800',
+    'code_generated': 'bg-green-100 text-green-800'
+  }
+  return stateClasses[state] || 'bg-gray-100 text-gray-800'
+}
+
+const getStateDotClass = (state) => {
+  const dotClasses = {
+    'creating': 'bg-blue-500',
+    'git_initing': 'bg-yellow-500',
+    'git_inited': 'bg-indigo-500',
+    'code_generating': 'bg-purple-500',
+    'code_generated': 'bg-green-500'
+  }
+  return dotClasses[state] || 'bg-gray-500'
+}
+
+const getStateLabel = (state) => {
+  const stateLabels = {
+    'creating': 'Creating',
+    'git_initing': 'Initializing Git',
+    'git_inited': 'Git Ready',
+    'code_generating': 'Generating Code',
+    'code_generated': 'Code Generated'
+  }
+  return stateLabels[state] || 'Unknown'
+}
 
 const fetchSpecs = async () => {
   try {

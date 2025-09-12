@@ -68,7 +68,9 @@ func main() {
 	api.Get("/spec-jobs/:id", handlers.GetJob(pool))
 	api.Get("/specs", handlers.ListSpecs(pool))
 	api.Get("/specs/:id", handlers.GetSpec(pool))
+	api.Get("/specs/:id/state-logs", handlers.GetSpecStateLogs(pool))
 	api.Delete("/specs/:id", handlers.DeleteSpec(pool))
+	api.Get("/specs/:spec_id/code-job", handlers.GetCodeJobBySpecID(pool))
 	api.Post("/specs/:id/devin-task", handlers.CreateDevinTask(pool))
 
 	port := os.Getenv("PORT")

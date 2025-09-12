@@ -449,6 +449,7 @@ IMPORTANT: Do NOT commit directly to the main branch. Always create a feature br
 	if !ok {
 		return "", fmt.Errorf("session_id is not a string")
 	}
+	sessionIDStr = strings.TrimPrefix(sessionIDStr, "devin-")
 
 	// Log session creation success
 	log.Printf("Successfully created Devin session: %s", sessionIDStr)

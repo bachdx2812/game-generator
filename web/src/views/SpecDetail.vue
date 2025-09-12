@@ -29,6 +29,14 @@
           </button>
           <h1 class="text-3xl font-bold text-gray-900">{{ spec.title }}</h1>
           <p class="text-gray-600 mt-1">{{ spec.brief }}</p>
+          <!-- Add state display -->
+          <div class="mt-3">
+            <span :class="getStateClass(spec.state)"
+              class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium">
+              <span :class="getStateDotClass(spec.state)" class="w-2 h-2 rounded-full mr-2"></span>
+              {{ getStateLabel(spec.state) }}
+            </span>
+          </div>
         </div>
         <div class="flex space-x-3">
           <button @click="copyToClipboard(JSON.stringify(spec.spec_json, null, 2))" class="btn-secondary">
@@ -126,7 +134,8 @@
             <a :href="spec.devin_session_url" target="_blank" rel="noopener noreferrer"
               class="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-200 font-medium text-sm">
               <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
               </svg>
               Open in Devin
             </a>
@@ -209,14 +218,82 @@
       </div>
     </div>
 
+    <!-- State Information Section -->
+    <div class="mb-8" v-if="spec">
+      <div class="grid lg:grid-cols-2 gap-8">
+        <!-- Current State -->
+        <div class="card">
+          <h2 class="text-xl font-semibold text-gray-900 mb-4">Current State</h2>
+          <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+            <div class="flex items-center">
+              <span :class="getStateDotClass(spec?.state)" class="w-4 h-4 rounded-full mr-3"></span>
+              <div>
+                <p class="font-medium text-gray-900">{{ getStateLabel(spec?.state) }}</p>
+                <p class="text-sm text-gray-600">{{ getStateDescription(spec?.state) }}</p>
+              </div>
+            </div>
+            <div class="text-right">
+              <p class="text-sm text-gray-500">Last Updated</p>
+              <p class="text-sm font-medium text-gray-900">{{ formatDate(spec?.updated_at || spec?.created_at) }}</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress Tracker -->
+        <div class="card">
+          <h2 class="text-xl font-semibold text-gray-900 mb-4">Progress</h2>
+          <div class="space-y-3">
+            <div v-for="(state, index) in stateFlow" :key="state" class="flex items-center">
+              <div class="flex items-center flex-1">
+                <div :class="[
+                  'w-3 h-3 rounded-full mr-3',
+                  getStateIndex(spec?.state) >= index ? getStateDotClass(state) : 'bg-gray-300'
+                ]"></div>
+                <span :class="[
+                  'text-sm',
+                  getStateIndex(spec?.state) >= index ? 'text-gray-900 font-medium' : 'text-gray-500'
+                ]">{{ getStateLabel(state) }}</span>
+              </div>
+              <div v-if="getStateIndex(spec?.state) === index" class="text-xs text-blue-600 font-medium">
+                Current
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- State Logs Section -->
+    <div class="mb-8" v-if="spec?.state_logs && spec.state_logs.length > 0">
+      <div class="card">
+        <h2 class="text-xl font-semibold text-gray-900 mb-4">State History</h2>
+        <div class="space-y-4">
+          <div v-for="log in spec.state_logs" :key="log.id"
+            class="flex items-start space-x-3 p-3 bg-gray-50 rounded-lg">
+            <span :class="getStateDotClass(log.state_after)" class="w-3 h-3 rounded-full mt-1 flex-shrink-0"></span>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between">
+                <p class="text-sm font-medium text-gray-900">{{ getStateLabel(log.state_after) }}</p>
+                <p class="text-xs text-gray-500">{{ formatDate(log.created_at) }}</p>
+              </div>
+              <p v-if="log.detail" class="text-sm text-gray-600 mt-1">{{ log.detail }}</p>
+              <p v-if="log.state_before" class="text-xs text-gray-500 mt-1">
+                Transitioned from: {{ getStateLabel(log.state_before) }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Delete Confirmation Dialog -->
     <ConfirmDialog :show="showDeleteDialog" :loading="deleteLoading" title="Delete Specification"
-      :message="`Are you sure you want to delete '${spec?.title}'? This action cannot be undone and will remove the spec from both the database and vector database.`"
-      confirm-text="Delete" @confirm="deleteSpec" @cancel="showDeleteDialog = false" />
+      :message="`Are you sure you want to delete '${spec?.title}'? This action cannot be undone.`" confirm-text="Delete"
+      @confirm="deleteSpec" @cancel="showDeleteDialog = false" />
   </div>
 </template>
 
-<script setup lang="ts">
+<script setup>
 import VueJsonPretty from 'vue-json-pretty';
 import 'vue-json-pretty/lib/styles.css'
 import { ref, onMounted, computed } from 'vue'
@@ -229,13 +306,65 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
-const spec = ref<any>(null)
+const spec = ref(null)
 const loading = ref(true)
 const error = ref('')
 const activeTab = ref('markdown')
 const showDeleteDialog = ref(false)
 const deleteLoading = ref(false)
 const devinTaskLoading = ref(false)
+
+// State flow definition
+const stateFlow = ['creating', 'git_initing', 'git_inited', 'code_generating', 'code_generated']
+
+// State helper functions
+const getStateClass = (state) => {
+  const stateClasses = {
+    'creating': 'bg-blue-100 text-blue-800',
+    'git_initing': 'bg-yellow-100 text-yellow-800',
+    'git_inited': 'bg-indigo-100 text-indigo-800',
+    'code_generating': 'bg-purple-100 text-purple-800',
+    'code_generated': 'bg-green-100 text-green-800'
+  }
+  return stateClasses[state] || 'bg-gray-100 text-gray-800'
+}
+
+const getStateDotClass = (state) => {
+  const dotClasses = {
+    'creating': 'bg-blue-500',
+    'git_initing': 'bg-yellow-500',
+    'git_inited': 'bg-indigo-500',
+    'code_generating': 'bg-purple-500',
+    'code_generated': 'bg-green-500'
+  }
+  return dotClasses[state] || 'bg-gray-500'
+}
+
+const getStateLabel = (state) => {
+  const stateLabels = {
+    'creating': 'Creating',
+    'git_initing': 'Initializing Git',
+    'git_inited': 'Git Ready',
+    'code_generating': 'Generating Code',
+    'code_generated': 'Code Generated'
+  }
+  return stateLabels[state] || 'Unknown'
+}
+
+const getStateDescription = (state) => {
+  const descriptions = {
+    'creating': 'Game specification is being created',
+    'git_initing': 'Setting up Git repository',
+    'git_inited': 'Git repository is ready for code generation',
+    'code_generating': 'AI is generating game code',
+    'code_generated': 'Game code has been successfully generated'
+  }
+  return descriptions[state] || 'Unknown state'
+}
+
+const getStateIndex = (state) => {
+  return stateFlow.indexOf(state)
+}
 
 // Configure marked with syntax highlighting
 marked.use(markedHighlight({
@@ -265,6 +394,7 @@ const fetchSpec = async () => {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
     spec.value = await response.json()
+    console.log('Spec data:', spec.value) // Debug log
   } catch (err) {
     console.error('Error fetching spec:', err)
     error.value = 'Failed to load specification. Please try again.'
@@ -295,13 +425,33 @@ const deleteSpec = async () => {
   }
 }
 
-const copyToClipboard = async (text: string) => {
+const copyToClipboard = async (text) => {
   try {
     await navigator.clipboard.writeText(text)
     // You could add a toast notification here
   } catch (err) {
     console.error('Failed to copy to clipboard:', err)
   }
+}
+
+const formatDate = (dateString) => {
+  if (!dateString) return 'N/A'
+  return new Date(dateString).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  })
+}
+
+const formatDateTime = (dateString) => {
+  if (!dateString) return 'N/A'
+  return new Date(dateString).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
 }
 
 onMounted(fetchSpec)

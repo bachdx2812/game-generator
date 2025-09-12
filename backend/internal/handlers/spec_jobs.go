@@ -76,6 +76,45 @@ func hashSpec(specJSON map[string]interface{}) (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
+// State constants
+const (
+	StateCreating       = "creating"
+	StateGitIniting     = "git_initing"
+	StateGitInited      = "git_inited"
+	StateCodeGenerating = "code_generating"
+	StateCodeGenerated  = "code_generated"
+)
+
+// Helper function to update game spec state and log the transition
+func updateGameSpecState(db *pgxpool.Pool, specID, newState, detail string) error {
+	ctx := context.Background()
+
+	// Get current state
+	var currentState string
+	err := db.QueryRow(ctx, "SELECT state FROM game_specs WHERE id = $1", specID).Scan(&currentState)
+	if err != nil {
+		return fmt.Errorf("failed to get current state: %v", err)
+	}
+
+	// Update game spec state
+	_, err = db.Exec(ctx, "UPDATE game_specs SET state = $1 WHERE id = $2", newState, specID)
+	if err != nil {
+		return fmt.Errorf("failed to update state: %v", err)
+	}
+
+	// Log state transition
+	_, err = db.Exec(ctx, `
+		INSERT INTO game_spec_states (game_spec_id, state_before, state_after, detail)
+		VALUES ($1, $2, $3, $4)
+	`, specID, currentState, newState, detail)
+	if err != nil {
+		return fmt.Errorf("failed to log state transition: %v", err)
+	}
+
+	log.Printf("[STATE] Spec %s: %s → %s (%s)", specID, currentState, newState, detail)
+	return nil
+}
+
 func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req CreateJobReq
@@ -164,11 +203,16 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		specID := uuid.New().String()
-		_, err = db.Exec(ctx, `INSERT INTO game_specs (id,title,brief,spec_markdown,spec_json,spec_hash,genre,duration_sec)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-			specID, g.Title, req.Brief, g.SpecMarkdown, g.SpecJSON, hash, g.SpecJSON["genre"], g.SpecJSON["duration_sec"])
+		_, err = db.Exec(ctx, `INSERT INTO game_specs (id,title,brief,spec_markdown,spec_json,spec_hash,genre,duration_sec,state)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			specID, g.Title, req.Brief, g.SpecMarkdown, g.SpecJSON, hash, g.SpecJSON["genre"], g.SpecJSON["duration_sec"], StateCreating)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+
+		// Use updateGameSpecState instead of manual insert
+		if err := updateGameSpecState(db, specID, StateCreating, "Game spec created"); err != nil {
+			log.Printf("Failed to log initial state: %v", err)
 		}
 
 		up := upsertReq{SpecID: specID, Text: normText, Payload: map[string]interface{}{"title": g.Title}}
@@ -187,22 +231,18 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 		// Always trigger code generation automatically (removed flag check)
 		codeJobID := uuid.New().String()
 		go func() {
+			// Update state to git_initing
+			if err := updateGameSpecState(db, specID, StateGitIniting, "Starting git repository initialization"); err != nil {
+				log.Printf("Failed to update state to git_initing: %v", err)
+			}
+
 			// Initialize git repository
 			gitRepo := utils.NewGitRepo()
-			outputPath := "/tmp" // fallback to /tmp if git not configured
-
-			if gitRepo.IsConfigured() {
-				if err := gitRepo.InitializeRepo(); err != nil {
-					log.Printf("Failed to initialize git repo: %v", err)
-				} else {
-					outputPath = gitRepo.RepoPath
-				}
-			}
 
 			codeReq := CreateCodeJobReq{
 				GameSpecID: specID,
 				GameSpec:   g.SpecJSON,
-				OutputPath: outputPath,
+				OutputPath: gitRepo.RepoPath,
 			}
 
 			// Call the existing code generation logic
@@ -215,21 +255,15 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 		`, codeJobID, specID, g.SpecJSON, codeReq.OutputPath, now, now)
 
 			if err == nil {
-				// Start background code generation
 				go processCodeGeneration(db, codeJobID, codeReq)
+
 				log.Printf("[INFO] Auto-triggered code generation job %s for spec %s", codeJobID, specID)
+			} else {
+				log.Printf("[ERROR] Failed to create code job: %v", err)
 			}
 		}()
 
-		response := fiber.Map{
-			"job_id":         jobID,
-			"status":         "COMPLETED",
-			"result_spec_id": specID,
-			"code_generation": "triggered",
-			"code_job_id":     codeJobID,
-		}
-
-		return c.Status(201).JSON(response)
+		return c.Status(200).JSON(fiber.Map{"job_id": jobID, "status": "COMPLETED", "result_spec_id": specID})
 	}
 }
 
@@ -267,20 +301,29 @@ func GetJob(db *pgxpool.Pool) fiber.Handler {
 func ListSpecs(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		ctx := context.Background()
-		rows, err := db.Query(ctx, `SELECT id,title,created_at FROM game_specs ORDER BY created_at DESC LIMIT 50`)
+		rows, err := db.Query(ctx, `
+			SELECT id, title, brief, state, created_at
+			FROM game_specs
+			ORDER BY created_at DESC
+			LIMIT 50
+		`)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		defer rows.Close()
+
 		type item struct {
 			ID        string    `json:"id"`
 			Title     string    `json:"title"`
+			Brief     string    `json:"brief"`
+			State     string    `json:"state"`
 			CreatedAt time.Time `json:"created_at"`
 		}
+
 		var out []item
 		for rows.Next() {
 			var it item
-			if err := rows.Scan(&it.ID, &it.Title, &it.CreatedAt); err != nil {
+			if err := rows.Scan(&it.ID, &it.Title, &it.Brief, &it.State, &it.CreatedAt); err != nil {
 				continue
 			}
 			out = append(out, it)
@@ -300,14 +343,15 @@ func GetSpec(db *pgxpool.Pool) fiber.Handler {
 			Brief          string  `json:"brief"`
 			SpecMarkdown   string  `json:"spec_markdown"`
 			SpecJSON       []byte  `json:"spec_json"`
+			State          string  `json:"state"`
 			DevinSessionID *string `json:"devin_session_id"`
 		}
 
 		err := db.QueryRow(ctx, `
-			SELECT id, title, brief, spec_markdown, spec_json, devin_session_id
+			SELECT id, title, brief, spec_markdown, spec_json, state, devin_session_id
 			FROM game_specs
 			WHERE id = $1
-		`, id).Scan(&spec.ID, &spec.Title, &spec.Brief, &spec.SpecMarkdown, &spec.SpecJSON, &spec.DevinSessionID)
+		`, id).Scan(&spec.ID, &spec.Title, &spec.Brief, &spec.SpecMarkdown, &spec.SpecJSON, &spec.State, &spec.DevinSessionID)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -322,12 +366,44 @@ func GetSpec(db *pgxpool.Pool) fiber.Handler {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to parse spec JSON")
 		}
 
+		// Fetch state logs
+		stateLogsRows, err := db.Query(ctx, `
+			SELECT state_before, state_after, detail, created_at
+			FROM game_spec_states
+			WHERE game_spec_id = $1
+			ORDER BY created_at ASC
+		`, id)
+		if err != nil {
+			log.Printf("Error fetching state logs: %v", err)
+			// Continue without state logs rather than failing
+		}
+		defer stateLogsRows.Close()
+
+		type StateLog struct {
+			StateBefore *string   `json:"state_before"`
+			StateAfter  string    `json:"state_after"`
+			Detail      *string   `json:"detail,omitempty"`
+			CreatedAt   time.Time `json:"created_at"`
+		}
+
+		var stateLogs []StateLog
+		for stateLogsRows.Next() {
+			var stateLog StateLog
+			if err := stateLogsRows.Scan(&stateLog.StateBefore, &stateLog.StateAfter, &stateLog.Detail, &stateLog.CreatedAt); err != nil {
+				log.Printf("Error scanning state log: %v", err)
+				continue
+			}
+			stateLogs = append(stateLogs, stateLog)
+		}
+
 		response := fiber.Map{
 			"id":            spec.ID,
 			"title":         spec.Title,
 			"brief":         spec.Brief,
 			"spec_markdown": spec.SpecMarkdown,
 			"spec_json":     specJSON,
+			"state":         spec.State,
+			"state_logs":    stateLogs,
 		}
 
 		// Add Devin session information if available
@@ -479,7 +555,8 @@ func CreateDevinTask(db *pgxpool.Pool) fiber.Handler {
 			})
 		}
 
-		// Store session ID in database
+		log.Printf("[DEBUG] Original session ID from Devin: '%s' (length: %d)", sessionID, len(sessionID))
+
 		_, err = db.Exec(ctx, `UPDATE game_specs SET devin_session_id = $1 WHERE id = $2`, sessionID, specID)
 		if err != nil {
 			log.Printf("[ERROR] Failed to store Devin session ID in database: %v", err)
@@ -500,6 +577,56 @@ func CreateDevinTask(db *pgxpool.Pool) fiber.Handler {
 			"session_url": fmt.Sprintf("https://app.devin.ai/sessions/%s", sessionID),
 			"repository":  fmt.Sprintf("%s/tree/main/%s", cleanRepoURL, specID),
 			"status":      "success",
+		})
+	}
+}
+
+func GetSpecStateLogs(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		ctx := context.Background()
+
+		// Check if spec exists
+		var exists bool
+		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM game_specs WHERE id = $1)", id).Scan(&exists)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Database error")
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusNotFound, "Spec not found")
+		}
+
+		// Fetch state logs
+		rows, err := db.Query(ctx, `
+			SELECT state_before, state_after, detail, created_at
+			FROM game_spec_states
+			WHERE game_spec_id = $1
+			ORDER BY created_at ASC
+		`, id)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to fetch state logs")
+		}
+		defer rows.Close()
+
+		type StateLog struct {
+			StateBefore *string   `json:"state_before"`
+			StateAfter  string    `json:"state_after"`
+			Detail      *string   `json:"detail,omitempty"`
+			CreatedAt   time.Time `json:"created_at"`
+		}
+
+		var stateLogs []StateLog
+		for rows.Next() {
+			var stateLog StateLog
+			if err := rows.Scan(&stateLog.StateBefore, &stateLog.StateAfter, &stateLog.Detail, &stateLog.CreatedAt); err != nil {
+				continue
+			}
+			stateLogs = append(stateLogs, stateLog)
+		}
+
+		return c.JSON(fiber.Map{
+			"spec_id":    id,
+			"state_logs": stateLogs,
 		})
 	}
 }
