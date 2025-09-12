@@ -29,20 +29,11 @@ func NewGitRepo() *GitRepo {
 		RepoURL:  os.Getenv("GIT_REPO_URL"),
 		Username: os.Getenv("GIT_USERNAME"),
 		Token:    os.Getenv("GIT_TOKEN"),
-		AutoPush: os.Getenv("GIT_AUTO_PUSH") == "true",
 	}
 }
 
 func (g *GitRepo) IsConfigured() bool {
 	return g.RepoPath != "" && g.RepoURL != "" && g.Token != ""
-}
-
-// safeSubstring safely extracts substring without panic
-func safeSubstring(s string, length int) string {
-	if len(s) <= length {
-		return s
-	}
-	return s[:length]
 }
 
 func (g *GitRepo) getAuthenticatedURL() (string, error) {
@@ -246,22 +237,19 @@ func (g *GitRepo) CommitAndPush(gamePath, gameTitle, gameID string) error {
 		return fmt.Errorf("failed to commit changes: %v", err)
 	}
 
-	// Push to remote if auto-push is enabled
-	if g.AutoPush {
-		// Try to push to main branch first
-		cmd = exec.Command("git", "push", "origin", "main")
+	// Try to push to main branch first
+	cmd = exec.Command("git", "push", "origin", "main")
+	cmd.Dir = g.RepoPath
+	if err := cmd.Run(); err != nil {
+		// Try 'master' branch if 'main' fails
+		cmd = exec.Command("git", "push", "origin", "master")
 		cmd.Dir = g.RepoPath
 		if err := cmd.Run(); err != nil {
-			// Try 'master' branch if 'main' fails
-			cmd = exec.Command("git", "push", "origin", "master")
+			// Try to push and set upstream
+			cmd = exec.Command("git", "push", "-u", "origin", "main")
 			cmd.Dir = g.RepoPath
 			if err := cmd.Run(); err != nil {
-				// Try to push and set upstream
-				cmd = exec.Command("git", "push", "-u", "origin", "main")
-				cmd.Dir = g.RepoPath
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("failed to push to remote: %v", err)
-				}
+				return fmt.Errorf("failed to push to remote: %v", err)
 			}
 		}
 	}
@@ -366,26 +354,27 @@ func (g *GitRepo) CreateDevinTask(gameSpecID, gameTitle string) (string, error) 
 		return "", fmt.Errorf("GIT_REPO_URL environment variable not set")
 	}
 
-	taskDescription := fmt.Sprintf(`Please work on the game project in folder /tree/main/%s.
+	taskDescription := fmt.Sprintf(`Please work on the game project in folder %s.
 
-This folder contains an existing game implementation with a README.md file that describes the game specification and requirements.
+This folder contains a README.md file that describes the complete game specification and requirements.
 
 Your tasks:
-1. Navigate to the /tree/main/%s folder in the repository
+1. Navigate to the %s folder in the repository
 2. Read the README.md file to understand the game specification
-3. Test the existing game code to ensure it runs correctly
-4. Fix any bugs or issues you find
-5. Ensure the game meets all requirements specified in the README
-6. Create a new branch for your changes (e.g., fix/game-%s or improve/game-%s)
-7. Commit your changes to the new branch with descriptive commit messages
-8. Create a pull request to merge your changes into the main branch
-9. Only create the PR if you made meaningful improvements or fixes
+3. Implement the complete game based on the specification in the README
+4. Create all necessary HTML, CSS, and JavaScript files for the game
+5. Ensure the game is fully functional and meets all requirements specified in the README
+6. Test the game thoroughly to ensure it works correctly
+7. Create a new branch for your implementation (e.g., implement/game-%s or develop/game-%s)
+8. Commit your implementation to the new branch with descriptive commit messages
+9. Create a pull request to merge your implementation into the main branch
+10. Include screenshots or a demo video in the PR description
 
 Repository: %s
 Game Title: %s
 Game Spec ID: %s
 
-IMPORTANT: Do NOT commit directly to the main branch. Always create a feature branch and submit a pull request for review.`, gameSpecID, gameSpecID, gameSpecID, gameSpecID, repoURL, gameTitle, gameSpecID)
+IMPORTANT: Do NOT commit directly to the main branch. Always create a feature branch and submit a pull request for review. The README.md contains the complete specification - implement the game from scratch based on these requirements.`, gameSpecID, gameSpecID, gameSpecID, gameSpecID, repoURL, gameTitle, gameSpecID)
 
 	// Create payload for Devin API sessions endpoint
 	payload := map[string]interface{}{

@@ -184,54 +184,49 @@ func PostSpecJob(db *pgxpool.Pool) fiber.Handler {
 
 		_, _ = db.Exec(ctx, `UPDATE gen_spec_jobs SET status='COMPLETED', result_spec_id=$2, finished_at=now() WHERE id=$1`, jobID, specID)
 
-		var codeJobID string
-		if os.Getenv("AUTO_CODE_GENERATION") == "true" {
-			codeJobID = uuid.New().String()
-			go func() {
-				// Initialize git repository
-				gitRepo := utils.NewGitRepo()
-				outputPath := "/tmp" // fallback to /tmp if git not configured
+		// Always trigger code generation automatically (removed flag check)
+		codeJobID := uuid.New().String()
+		go func() {
+			// Initialize git repository
+			gitRepo := utils.NewGitRepo()
+			outputPath := "/tmp" // fallback to /tmp if git not configured
 
-				if gitRepo.IsConfigured() {
-					if err := gitRepo.InitializeRepo(); err != nil {
-						log.Printf("Failed to initialize git repo: %v", err)
-					} else {
-						outputPath = gitRepo.RepoPath
-					}
+			if gitRepo.IsConfigured() {
+				if err := gitRepo.InitializeRepo(); err != nil {
+					log.Printf("Failed to initialize git repo: %v", err)
+				} else {
+					outputPath = gitRepo.RepoPath
 				}
+			}
 
-				codeReq := CreateCodeJobReq{
-					GameSpecID: specID,
-					GameSpec:   g.SpecJSON,
-					OutputPath: outputPath,
-				}
+			codeReq := CreateCodeJobReq{
+				GameSpecID: specID,
+				GameSpec:   g.SpecJSON,
+				OutputPath: outputPath,
+			}
 
-				// Call the existing code generation logic
-				now := time.Now()
+			// Call the existing code generation logic
+			now := time.Now()
 
-				// Insert code job
-				_, err := db.Exec(context.Background(), `
+			// Insert code job
+			_, err := db.Exec(context.Background(), `
 		INSERT INTO code_jobs (id, game_spec_id, game_spec, output_path, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, 'queued', $5, $6)
 		`, codeJobID, specID, g.SpecJSON, codeReq.OutputPath, now, now)
 
-				if err == nil {
-					// Start background code generation
-					go processCodeGeneration(db, codeJobID, codeReq)
-					log.Printf("[INFO] Auto-triggered code generation job %s for spec %s", codeJobID, specID)
-				}
-			}()
-		}
+			if err == nil {
+				// Start background code generation
+				go processCodeGeneration(db, codeJobID, codeReq)
+				log.Printf("[INFO] Auto-triggered code generation job %s for spec %s", codeJobID, specID)
+			}
+		}()
 
 		response := fiber.Map{
 			"job_id":         jobID,
 			"status":         "COMPLETED",
 			"result_spec_id": specID,
-		}
-
-		if os.Getenv("AUTO_CODE_GENERATION") == "true" {
-			response["code_generation"] = "triggered"
-			response["code_job_id"] = codeJobID
+			"code_generation": "triggered",
+			"code_job_id":     codeJobID,
 		}
 
 		return c.Status(201).JSON(response)
