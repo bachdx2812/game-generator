@@ -127,12 +127,9 @@
               <div class="flex flex-col items-end space-y-1">
                 <span class="text-xs text-gray-500">{{ formatDate(spec.created_at) }}</span>
                 <!-- Devin Session Indicator -->
-                <div v-if="spec.devin_session_id"
-                  class="flex items-center text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
+                <div v-if="spec.devin_session_id" class="flex items-center text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
                   <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fill-rule="evenodd"
-                      d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                      clip-rule="evenodd"></path>
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
                   </svg>
                   Devin Active
                 </div>
@@ -164,8 +161,7 @@
               <a v-if="spec.devin_session_id" :href="spec.devin_session_url" target="_blank" rel="noopener noreferrer"
                 class="w-full inline-flex justify-center items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-200 font-medium">
                 <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
                 </svg>
                 Open in Devin
               </a>
