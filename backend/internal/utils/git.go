@@ -359,37 +359,33 @@ func (g *GitRepo) RemoveGameFolders(gameID, gameTitle string) error {
 	return nil
 }
 
-// createDevinTask creates a Devin task for further game development
-func (g *GitRepo) CreateDevinTask(repoURL, specID, specTitle string) error {
-	// Create task description with specific folder instructions
-	taskDescription := fmt.Sprintf(`Generate a complete HTML5 game based on this specification:
+// CreateDevinTask creates a Devin task for further game development and returns the session ID
+func (g *GitRepo) CreateDevinTask(gameSpecID, gameTitle string) (string, error) {
+	repoURL := strings.TrimSuffix(os.Getenv("GIT_REPO_URL"), ".git")
+	if repoURL == "" {
+		return "", fmt.Errorf("GIT_REPO_URL environment variable not set")
+	}
 
-Title: %s
-Spec ID: %s
+	taskDescription := fmt.Sprintf(`Please work on the game project in folder /tree/main/%s.
 
-IMPORTANT INSTRUCTIONS:
-1. Clone the repository: %s
-2. Work ONLY in the folder named "%s" (it should already exist)
-3. Read the README.md file in the "%s" folder carefully - it contains the complete game specification
-4. The game files are already present in the folder:
-   - index.html (main game file)
-   - style.css (game styling)
-   - script.js (game logic)
-   - Any additional assets
-5. Your task is to:
-   - Carefully test the existing game functionality
-   - Fix any bugs or issues you find
-   - Ensure the game works exactly as specified in README.md
-   - Make sure all game mechanics are properly implemented
-   - Verify the game is fully playable and responsive
-6. Test the game thoroughly across different scenarios
-7. Only commit and push changes if you made fixes or improvements
-8. If the game is already working perfectly, just confirm this in your response
+This folder contains an existing game implementation with a README.md file that describes the game specification and requirements.
+
+Your tasks:
+1. Navigate to the /tree/main/%s folder in the repository
+2. Read the README.md file to understand the game specification
+3. Test the existing game code to ensure it runs correctly
+4. Fix any bugs or issues you find
+5. Ensure the game meets all requirements specified in the README
+6. Create a new branch for your changes (e.g., fix/game-%s or improve/game-%s)
+7. Commit your changes to the new branch with descriptive commit messages
+8. Create a pull request to merge your changes into the main branch
+9. Only create the PR if you made meaningful improvements or fixes
 
 Repository: %s
-Working Directory: %s/%s
-Game Folder URL: %s/tree/main/%s`,
-		specTitle, specID, repoURL, specID, specID, repoURL, specID, repoURL, specID)
+Game Title: %s
+Game Spec ID: %s
+
+IMPORTANT: Do NOT commit directly to the main branch. Always create a feature branch and submit a pull request for review.`, gameSpecID, gameSpecID, gameSpecID, gameSpecID, repoURL, gameTitle, gameSpecID)
 
 	// Create payload for Devin API sessions endpoint
 	payload := map[string]interface{}{
@@ -400,7 +396,7 @@ Game Folder URL: %s/tree/main/%s`,
 	// Marshal payload
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
 	// Get Devin API URL from environment or use default
@@ -412,13 +408,13 @@ Game Folder URL: %s/tree/main/%s`,
 	// Get API key
 	apiKey := os.Getenv("DEVIN_API_KEY")
 	if apiKey == "" {
-		return fmt.Errorf("DEVIN_API_KEY environment variable is required")
+		return "", fmt.Errorf("DEVIN_API_KEY environment variable is required")
 	}
 
 	// Create HTTP request
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set headers
@@ -429,39 +425,48 @@ Game Folder URL: %s/tree/main/%s`,
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
+		return "", fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Read response body for better error reporting
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return "", fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Log the response for debugging
-	fmt.Printf("Devin API Response Status: %d\n", resp.StatusCode)
-	fmt.Printf("Devin API Response Body: %s\n", string(respBody))
+	log.Printf("Devin API Response Status: %d", resp.StatusCode)
+	log.Printf("Devin API Response Body: %s", string(respBody))
 
 	// Check response status
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return fmt.Errorf("Devin API returned status %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("Devin API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	// Parse response to get session info
 	var sessionResponse map[string]interface{}
 	if err := json.Unmarshal(respBody, &sessionResponse); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Extract session ID from response
+	_, ok := sessionResponse["session_id"]
+	if !ok {
+		return "", fmt.Errorf("session_id not found in response")
+	}
+
+	sessionIDStr, ok := sessionResponse["session_id"].(string)
+	if !ok {
+		return "", fmt.Errorf("session_id is not a string")
 	}
 
 	// Log session creation success
-	if sessionID, ok := sessionResponse["session_id"]; ok {
-		fmt.Printf("Successfully created Devin session: %s\n", sessionID)
-		if sessionURL, ok := sessionResponse["url"]; ok {
-			fmt.Printf("Session URL: %s\n", sessionURL)
-		}
-		fmt.Printf("Game will be created in folder: %s\n", specID)
+	log.Printf("Successfully created Devin session: %s", sessionIDStr)
+	if sessionURL, ok := sessionResponse["url"]; ok {
+		log.Printf("Session URL: %s", sessionURL)
 	}
+	log.Printf("Game will be created in folder: %s", gameSpecID)
 
-	return nil
+	return sessionIDStr, nil
 }

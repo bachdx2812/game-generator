@@ -314,9 +314,17 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 			})
 		} else {
 			// After successful push, trigger Devin task if configured
-			repoURL := os.Getenv("GIT_REPO_URL")
-			if err := gitRepo.CreateDevinTask(req.GameSpecID, gameTitle, repoURL); err != nil {
+			if devinSessionID, err := gitRepo.CreateDevinTask(req.GameSpecID, gameTitle); err != nil {
 				log.Printf("Warning: Failed to create Devin task: %v", err)
+			} else {
+				// Update game spec with Devin session ID
+				// remove the `devin-` from the devinSessionID
+				devinSessionID = strings.TrimPrefix(devinSessionID, "devin-")
+
+				_, err := db.Exec(ctx, "UPDATE game_specs SET devin_session_id = $1 WHERE id = $2", devinSessionID, req.GameSpecID)
+				if err != nil {
+					log.Printf("Warning: Failed to update game spec with Devin session ID: %v", err)
+				}
 			}
 
 			updateJobStatus(db, jobID, "completed", 100, []string{

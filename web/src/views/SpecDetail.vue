@@ -114,6 +114,26 @@
         </div>
       </div>
 
+      <!-- Devin Session Info -->
+      <div v-if="spec.devin_session_id" class="card">
+        <h2 class="text-xl font-semibold text-gray-900 mb-4">Devin Session</h2>
+        <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-sm font-medium text-green-800 mb-1">Active Devin Session</p>
+              <p class="text-sm text-green-700">Session ID: {{ spec.devin_session_id }}</p>
+            </div>
+            <a :href="spec.devin_session_url" target="_blank" rel="noopener noreferrer"
+              class="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-200 font-medium text-sm">
+              <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+              </svg>
+              Open in Devin
+            </a>
+          </div>
+        </div>
+      </div>
+
       <!-- Detailed Sections -->
       <div class="space-y-8">
         <!-- Game Mechanics -->
@@ -300,8 +320,12 @@ const runDevinTask = async () => {
 
     const result = await response.json()
 
-    // Show success message
-    alert(`Devin task created successfully for "${result.game_title}"!\nRepository: ${result.repository}`)
+    // Show success message with session URL
+    const message = `Devin task created successfully for "${result.game_title}"!\n\nSession URL: ${result.session_url}\nRepository: ${result.repository}`
+    alert(message)
+
+    // Refresh the spec data to show the new session information
+    await fetchSpec()
 
   } catch (err) {
     console.error('Error creating Devin task:', err)

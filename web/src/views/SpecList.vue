@@ -118,23 +118,24 @@
         <div v-for="spec in specs" :key="spec.id"
           class="bg-white rounded-xl shadow-sm border hover:shadow-md transition-all duration-200 hover:-translate-y-1">
           <!-- Card Header -->
-          <div class="p-6 pb-4">
-            <div class="flex justify-between items-start mb-4">
-              <div class="flex-1 cursor-pointer" @click="$router.push(`/specs/${spec.id}`)">
-                <h3 class="text-lg font-semibold text-gray-900 mb-2 line-clamp-2 hover:text-blue-600 transition-colors">
-                  {{ spec.title }}</h3>
-                <p class="text-sm text-gray-500">{{ formatDate(spec.created_at) }}</p>
+          <div class="px-6 py-4 border-b border-gray-200">
+            <div class="flex items-start justify-between">
+              <div class="flex-1">
+                <h3 class="text-lg font-semibold text-gray-900 mb-1">{{ spec.title }}</h3>
+                <p class="text-sm text-gray-600 line-clamp-2">{{ spec.brief }}</p>
               </div>
-              <div class="ml-4">
-                <button @click="confirmDelete(spec)"
-                  class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors duration-200"
-                  title="Delete specification">
-                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16">
-                    </path>
+              <div class="flex flex-col items-end space-y-1">
+                <span class="text-xs text-gray-500">{{ formatDate(spec.created_at) }}</span>
+                <!-- Devin Session Indicator -->
+                <div v-if="spec.devin_session_id"
+                  class="flex items-center text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
+                  <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                      clip-rule="evenodd"></path>
                   </svg>
-                </button>
+                  Devin Active
+                </div>
               </div>
             </div>
           </div>
@@ -158,7 +159,17 @@
                 </svg>
                 View Details
               </router-link>
-              <button @click="runDevinTask(spec.id)" :disabled="devinTaskLoading[spec.id]"
+
+              <!-- Show Devin session link if available, otherwise show create button -->
+              <a v-if="spec.devin_session_id" :href="spec.devin_session_url" target="_blank" rel="noopener noreferrer"
+                class="w-full inline-flex justify-center items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-200 font-medium">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                </svg>
+                Open in Devin
+              </a>
+              <button v-else @click="runDevinTask(spec.id)" :disabled="devinTaskLoading[spec.id]"
                 class="w-full inline-flex justify-center items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors duration-200 font-medium">
                 <svg v-if="!devinTaskLoading[spec.id]" class="w-4 h-4 mr-2" fill="none" stroke="currentColor"
                   viewBox="0 0 24 24">
@@ -282,20 +293,25 @@ const runDevinTask = async (specId) => {
     })
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      const errorData = await response.json()
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
     }
 
     const result = await response.json()
     devinTaskStatus.value[specId] = 'success'
 
-    // Show success message (you could add a toast notification here)
-    console.log('Devin task created successfully:', result)
-    alert(`Devin task created successfully for "${result.game_title}"!\nRepository: ${result.repository}`)
+    // Show success message with session URL
+    const message = `Devin task created successfully for "${result.game_title}"!\n\nSession URL: ${result.session_url}\nRepository: ${result.repository}`
+    alert(message)
+
+    // Refresh the specs list to show updated session information
+    await fetchSpecs()
 
   } catch (err) {
     console.error('Error creating Devin task:', err)
     devinTaskStatus.value[specId] = 'error'
-    alert('Failed to create Devin task. Please try again.')
+    const errorMessage = err.message || 'Failed to create Devin task. Please try again.'
+    alert(`Failed to create Devin task: ${errorMessage}`)
   } finally {
     devinTaskLoading.value[specId] = false
   }

@@ -300,18 +300,19 @@ func GetSpec(db *pgxpool.Pool) fiber.Handler {
 		ctx := context.Background()
 
 		var spec struct {
-			ID           string `json:"id"`
-			Title        string `json:"title"`
-			Brief        string `json:"brief"`
-			SpecMarkdown string `json:"spec_markdown"`
-			SpecJSON     []byte `json:"spec_json"`
+			ID             string  `json:"id"`
+			Title          string  `json:"title"`
+			Brief          string  `json:"brief"`
+			SpecMarkdown   string  `json:"spec_markdown"`
+			SpecJSON       []byte  `json:"spec_json"`
+			DevinSessionID *string `json:"devin_session_id"`
 		}
 
 		err := db.QueryRow(ctx, `
-			SELECT id, title, brief, spec_markdown, spec_json
+			SELECT id, title, brief, spec_markdown, spec_json, devin_session_id
 			FROM game_specs
 			WHERE id = $1
-		`, id).Scan(&spec.ID, &spec.Title, &spec.Brief, &spec.SpecMarkdown, &spec.SpecJSON)
+		`, id).Scan(&spec.ID, &spec.Title, &spec.Brief, &spec.SpecMarkdown, &spec.SpecJSON, &spec.DevinSessionID)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -326,13 +327,21 @@ func GetSpec(db *pgxpool.Pool) fiber.Handler {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to parse spec JSON")
 		}
 
-		return c.JSON(fiber.Map{
+		response := fiber.Map{
 			"id":            spec.ID,
 			"title":         spec.Title,
 			"brief":         spec.Brief,
 			"spec_markdown": spec.SpecMarkdown,
 			"spec_json":     specJSON,
-		})
+		}
+
+		// Add Devin session information if available
+		if spec.DevinSessionID != nil && *spec.DevinSessionID != "" {
+			response["devin_session_id"] = *spec.DevinSessionID
+			response["devin_session_url"] = fmt.Sprintf("https://app.devin.ai/sessions/%s", *spec.DevinSessionID)
+		}
+
+		return c.JSON(response)
 	}
 }
 
@@ -437,21 +446,25 @@ func CreateDevinTask(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		specID := c.Params("id")
 		if specID == "" {
-			return c.Status(400).JSON(fiber.Map{"error": "Spec ID is required"})
+			return c.Status(400).JSON(fiber.Map{
+				"error": "Spec ID is required",
+			})
 		}
 
 		ctx := context.Background()
 
-		// Check if the spec exists and get its details
+		// Check if spec exists and get spec content
 		var gameTitle, specContent string
-		var exists bool
-		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM game_specs WHERE id = $1), COALESCE((SELECT title FROM game_specs WHERE id = $1), ''), COALESCE((SELECT spec_markdown FROM game_specs WHERE id = $1), '')", specID).Scan(&exists, &gameTitle, &specContent)
+		err := db.QueryRow(ctx, `SELECT title, spec_markdown FROM game_specs WHERE id = $1`, specID).Scan(&gameTitle, &specContent)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Database error"})
-		}
-
-		if !exists {
-			return c.Status(404).JSON(fiber.Map{"error": "Game spec not found"})
+			if err == sql.ErrNoRows {
+				return c.Status(404).JSON(fiber.Map{
+					"error": "Game spec not found",
+				})
+			}
+			return c.Status(500).JSON(fiber.Map{
+				"error": "Database error",
+			})
 		}
 
 		// Initialize git repository
@@ -462,19 +475,8 @@ func CreateDevinTask(db *pgxpool.Pool) fiber.Handler {
 			})
 		}
 
-		// Get repository URL from environment
-		repoURL := os.Getenv("GIT_REPO_URL")
-		if repoURL == "" {
-			return c.Status(500).JSON(fiber.Map{
-				"error": "Git repository URL not configured",
-			})
-		}
-
-		// Clean repository URL by removing .git suffix for Devin
-		cleanRepoURL := strings.TrimSuffix(repoURL, ".git")
-
-		// Create Devin task with spec ID for folder-specific work
-		err = gitRepo.CreateDevinTask(cleanRepoURL, specID, gameTitle)
+		// Create Devin task and get session ID
+		sessionID, err := gitRepo.CreateDevinTask(specID, gameTitle)
 		if err != nil {
 			log.Printf("[ERROR] Failed to create Devin task for spec %s: %v", specID, err)
 			return c.Status(500).JSON(fiber.Map{
@@ -482,14 +484,27 @@ func CreateDevinTask(db *pgxpool.Pool) fiber.Handler {
 			})
 		}
 
-		log.Printf("[SUCCESS] Created Devin task for game spec %s (%s)", specID, gameTitle)
+		// Store session ID in database
+		_, err = db.Exec(ctx, `UPDATE game_specs SET devin_session_id = $1 WHERE id = $2`, sessionID, specID)
+		if err != nil {
+			log.Printf("[ERROR] Failed to store Devin session ID in database: %v", err)
+			// Don't fail the request since the task was created successfully
+		}
+
+		log.Printf("[SUCCESS] Created Devin task for game spec %s (%s) with session ID: %s", specID, gameTitle, sessionID)
+
+		// Get repository URL for response
+		repoURL := os.Getenv("GIT_REPO_URL")
+		cleanRepoURL := strings.TrimSuffix(repoURL, ".git")
 
 		return c.JSON(fiber.Map{
-			"message":    "Devin task created successfully",
-			"spec_id":    specID,
-			"game_title": gameTitle,
-			"repository": fmt.Sprintf("%s/tree/main/%s", cleanRepoURL, specID),
-			"status":     "success",
+			"message":     "Devin task created successfully",
+			"spec_id":     specID,
+			"game_title":  gameTitle,
+			"session_id":  sessionID,
+			"session_url": fmt.Sprintf("https://app.devin.ai/sessions/%s", sessionID),
+			"repository":  fmt.Sprintf("%s/tree/main/%s", cleanRepoURL, specID),
+			"status":      "success",
 		})
 	}
 }
