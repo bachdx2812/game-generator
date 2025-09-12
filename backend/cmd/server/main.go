@@ -69,6 +69,7 @@ func main() {
 	api.Get("/specs", handlers.ListSpecs(pool))
 	api.Get("/specs/:id", handlers.GetSpec(pool))
 	api.Delete("/specs/:id", handlers.DeleteSpec(pool))
+	api.Post("/specs/:id/devin-task", handlers.CreateDevinTask(pool))
 
 	// Code generation routes
 	app.Post("/api/code-jobs", handlers.PostCodeJob(pool))

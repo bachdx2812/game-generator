@@ -1,9 +1,12 @@
 package utils
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -351,6 +354,113 @@ func (g *GitRepo) RemoveGameFolders(gameID, gameTitle string) error {
 		log.Printf("[INFO] Successfully pushed folder deletion to remote")
 	} else {
 		log.Printf("[INFO] Auto-push disabled, deletion committed locally only")
+	}
+
+	return nil
+}
+
+// createDevinTask creates a Devin task for further game development
+func (g *GitRepo) CreateDevinTask(repoURL, specID, specTitle string) error {
+	// Create task description with specific folder instructions
+	taskDescription := fmt.Sprintf(`Generate a complete HTML5 game based on this specification:
+
+Title: %s
+Spec ID: %s
+
+IMPORTANT INSTRUCTIONS:
+1. Clone the repository: %s
+2. Work ONLY in the folder named "%s" (it should already exist)
+3. Read the README.md file in the "%s" folder carefully - it contains the complete game specification
+4. The game files are already present in the folder:
+   - index.html (main game file)
+   - style.css (game styling)
+   - script.js (game logic)
+   - Any additional assets
+5. Your task is to:
+   - Carefully test the existing game functionality
+   - Fix any bugs or issues you find
+   - Ensure the game works exactly as specified in README.md
+   - Make sure all game mechanics are properly implemented
+   - Verify the game is fully playable and responsive
+6. Test the game thoroughly across different scenarios
+7. Only commit and push changes if you made fixes or improvements
+8. If the game is already working perfectly, just confirm this in your response
+
+Repository: %s
+Working Directory: %s/%s
+Game Folder URL: %s/tree/main/%s`,
+		specTitle, specID, repoURL, specID, specID, repoURL, specID, repoURL, specID)
+
+	// Create payload for Devin API sessions endpoint
+	payload := map[string]interface{}{
+		"prompt":     taskDescription,
+		"idempotent": true,
+	}
+
+	// Marshal payload
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Get Devin API URL from environment or use default
+	apiURL := os.Getenv("DEVIN_API_URL")
+	if apiURL == "" {
+		apiURL = "https://api.devin.ai/v1/sessions"
+	}
+
+	// Get API key
+	apiKey := os.Getenv("DEVIN_API_KEY")
+	if apiKey == "" {
+		return fmt.Errorf("DEVIN_API_KEY environment variable is required")
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+
+	// Make request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body for better error reporting
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Log the response for debugging
+	fmt.Printf("Devin API Response Status: %d\n", resp.StatusCode)
+	fmt.Printf("Devin API Response Body: %s\n", string(respBody))
+
+	// Check response status
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return fmt.Errorf("Devin API returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse response to get session info
+	var sessionResponse map[string]interface{}
+	if err := json.Unmarshal(respBody, &sessionResponse); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Log session creation success
+	if sessionID, ok := sessionResponse["session_id"]; ok {
+		fmt.Printf("Successfully created Devin session: %s\n", sessionID)
+		if sessionURL, ok := sessionResponse["url"]; ok {
+			fmt.Printf("Session URL: %s\n", sessionURL)
+		}
+		fmt.Printf("Game will be created in folder: %s\n", specID)
 	}
 
 	return nil

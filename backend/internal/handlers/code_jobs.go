@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -300,10 +301,11 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 	// Git operations if configured
 	if gitRepo.IsConfigured() {
 		gameTitle := "untitled-game"
-		if title, ok := req.GameSpec["title"].(string); ok && title != "" {
+		if title, ok := combinedGameSpec["title"].(string); ok && title != "" {
 			gameTitle = title
 		}
 
+		// Commit and push using the gitRepo.CommitAndPush method
 		if err := gitRepo.CommitAndPush(projectPath, gameTitle, req.GameSpecID); err != nil {
 			updateJobStatus(db, jobID, "completed", 100, []string{
 				"Code generation completed",
@@ -311,6 +313,12 @@ func processCodeGeneration(db *pgxpool.Pool, jobID string, req CreateCodeJobReq)
 				fmt.Sprintf("Git error: %v", err),
 			})
 		} else {
+			// After successful push, trigger Devin task if configured
+			repoURL := os.Getenv("GIT_REPO_URL")
+			if err := gitRepo.CreateDevinTask(req.GameSpecID, gameTitle, repoURL); err != nil {
+				log.Printf("Warning: Failed to create Devin task: %v", err)
+			}
+
 			updateJobStatus(db, jobID, "completed", 100, []string{
 				"Code generation completed successfully",
 				"Files committed and pushed to git repository",

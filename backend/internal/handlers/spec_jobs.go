@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -428,5 +429,67 @@ func DeleteSpec(db *pgxpool.Pool) fiber.Handler {
 		}
 
 		return c.JSON(response)
+	}
+}
+
+// CreateDevinTask creates a Devin task for a specific game spec
+func CreateDevinTask(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		specID := c.Params("id")
+		if specID == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "Spec ID is required"})
+		}
+
+		ctx := context.Background()
+
+		// Check if the spec exists and get its details
+		var gameTitle, specContent string
+		var exists bool
+		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM game_specs WHERE id = $1), COALESCE((SELECT title FROM game_specs WHERE id = $1), ''), COALESCE((SELECT spec_markdown FROM game_specs WHERE id = $1), '')", specID).Scan(&exists, &gameTitle, &specContent)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Database error"})
+		}
+
+		if !exists {
+			return c.Status(404).JSON(fiber.Map{"error": "Game spec not found"})
+		}
+
+		// Initialize git repository
+		gitRepo := utils.NewGitRepo()
+		if !gitRepo.IsConfigured() {
+			return c.Status(400).JSON(fiber.Map{
+				"error": "Git repository not configured. Devin tasks require git integration.",
+			})
+		}
+
+		// Get repository URL from environment
+		repoURL := os.Getenv("GIT_REPO_URL")
+		if repoURL == "" {
+			return c.Status(500).JSON(fiber.Map{
+				"error": "Git repository URL not configured",
+			})
+		}
+
+		// Clean repository URL by removing .git suffix for Devin
+		cleanRepoURL := strings.TrimSuffix(repoURL, ".git")
+
+		// Create Devin task with spec ID for folder-specific work
+		err = gitRepo.CreateDevinTask(cleanRepoURL, specID, gameTitle)
+		if err != nil {
+			log.Printf("[ERROR] Failed to create Devin task for spec %s: %v", specID, err)
+			return c.Status(500).JSON(fiber.Map{
+				"error": fmt.Sprintf("Failed to create Devin task: %v", err),
+			})
+		}
+
+		log.Printf("[SUCCESS] Created Devin task for game spec %s (%s)", specID, gameTitle)
+
+		return c.JSON(fiber.Map{
+			"message":    "Devin task created successfully",
+			"spec_id":    specID,
+			"game_title": gameTitle,
+			"repository": fmt.Sprintf("%s/tree/main/%s", cleanRepoURL, specID),
+			"status":     "success",
+		})
 	}
 }

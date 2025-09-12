@@ -34,6 +34,21 @@
           <button @click="copyToClipboard(JSON.stringify(spec.spec_json, null, 2))" class="btn-secondary">
             Copy JSON
           </button>
+          <button @click="runDevinTask" :disabled="devinTaskLoading"
+            class="px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors duration-200">
+            <svg v-if="!devinTaskLoading" class="w-4 h-4 mr-2 inline" fill="none" stroke="currentColor"
+              viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z">
+              </path>
+            </svg>
+            <svg v-else class="animate-spin w-4 h-4 mr-2 inline" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+              </path>
+            </svg>
+            {{ devinTaskLoading ? 'Creating Task...' : 'Run Devin Task' }}
+          </button>
           <button @click="showDeleteDialog = true"
             class="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
             Delete Spec
@@ -200,6 +215,7 @@ const error = ref('')
 const activeTab = ref('markdown')
 const showDeleteDialog = ref(false)
 const deleteLoading = ref(false)
+const devinTaskLoading = ref(false)
 
 // Configure marked with syntax highlighting
 marked.use(markedHighlight({
@@ -269,4 +285,29 @@ const copyToClipboard = async (text: string) => {
 }
 
 onMounted(fetchSpec)
+
+const runDevinTask = async () => {
+  try {
+    devinTaskLoading.value = true
+    const response = await fetch(`/api/specs/${route.params.id}/devin-task`, {
+      method: 'POST'
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+    }
+
+    const result = await response.json()
+
+    // Show success message
+    alert(`Devin task created successfully for "${result.game_title}"!\nRepository: ${result.repository}`)
+
+  } catch (err) {
+    console.error('Error creating Devin task:', err)
+    alert(`Failed to create Devin task: ${err.message}`)
+  } finally {
+    devinTaskLoading.value = false
+  }
+}
 </script>
